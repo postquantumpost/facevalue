@@ -10,52 +10,118 @@ import facevalue
 
 class FaceValueTests(unittest.TestCase):
     def test_no_arguments_do_nothing(self) -> None:
-        with patch.object(facevalue, "first_image") as first_image:
+        with patch.object(facevalue, "first_images") as first_images:
             self.assertEqual(facevalue.main([]), 0)
-        first_image.assert_not_called()
+        first_images.assert_not_called()
 
     def test_boolean_window_argument(self) -> None:
         self.assertTrue(facevalue.parse_arguments(["--window", "true"]).window)
         self.assertFalse(facevalue.parse_arguments(["--window", "false"]).window)
 
-    def test_first_image_uses_supported_files_in_name_order(self) -> None:
+    def test_first_images_uses_supported_files_in_name_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
             (directory / "z.png").write_bytes(b"image")
+            (directory / "middle.jpg").write_bytes(b"image")
             (directory / "notes.txt").write_text("not an image", encoding="utf-8")
             (directory / "a.JPEG").write_bytes(b"image")
 
-            self.assertEqual(facevalue.first_image(directory), directory / "a.JPEG")
+            self.assertEqual(
+                facevalue.first_images(directory),
+                [directory / "a.JPEG", directory / "middle.jpg"],
+            )
+
+    def test_procrustes_face_forward_aligns_landmarks(self) -> None:
+        landmarks = [
+            {"x": 0.0, "y": 0.0, "z": 0.0}
+            for _ in range(max(facevalue.PROCRUSTES_ANCHOR_INDICES) + 1)
+        ]
+        for index, target in zip(
+            facevalue.PROCRUSTES_ANCHOR_INDICES,
+            facevalue.PROCRUSTES_TARGET,
+            strict=True,
+        ):
+            landmarks[index] = {
+                "x": target[0],
+                "y": -target[2],
+                "z": target[1],
+            }
+
+        result = facevalue.procrustes_face_forward(landmarks)
+
+        self.assertEqual(result["landmark_count"], len(landmarks))
+        self.assertEqual(len(result["embedding"]), len(landmarks) * 3)
+        self.assertLess(result["rms_anchor_error"], 1e-10)
 
     def test_run_writes_expected_sections(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
-            image_path = directory / "face.png"
-            image_path.write_bytes(b"image")
+            image_path_1 = directory / "face-1.png"
+            image_path_2 = directory / "face-2.png"
+            image_path_1.write_bytes(b"image")
+            image_path_2.write_bytes(b"image")
             output_path = directory / "result.json"
-            geometry = {
+            geometry_1 = {
                 "landmark_count": 1,
                 "landmarks": [{"x": 0.1, "y": 0.2, "z": 0.3}],
                 "embedding": [0.1, 0.2, 0.3],
                 "facial_transformation_matrixes": [],
                 "image": {
-                    "path": str(image_path),
+                    "path": str(image_path_1),
                     "width_px": 10,
                     "height_px": 10,
                 },
+            }
+            geometry_2 = {
+                **geometry_1,
+                "image": {**geometry_1["image"], "path": str(image_path_2)},
+            }
+            deepface_embedding_1 = {
+                "model": "SFace",
+                "dimension_count": 2,
+                "embedding": [0.1, 0.2],
+                "face_confidence": 0.99,
+                "facial_area": {"x": 1, "y": 2, "w": 3, "h": 4},
+                "image_path": str(image_path_1),
+            }
+            deepface_embedding_2 = {
+                **deepface_embedding_1,
+                "embedding": [0.3, 0.4],
+                "image_path": str(image_path_2),
             }
             arguments = argparse.Namespace(
                 fdir=directory, output=output_path, window=False
             )
 
-            with patch.object(
-                facevalue, "extract_mediapipe_geometry", return_value=geometry
+            with (
+                patch.object(
+                    facevalue,
+                    "extract_mediapipe_geometry",
+                    side_effect=[geometry_1, geometry_2],
+                ),
+                patch.object(
+                    facevalue,
+                    "extract_deepface_embedding",
+                    side_effect=[deepface_embedding_1, deepface_embedding_2],
+                ),
             ):
                 facevalue.run(arguments)
 
             data = json.loads(output_path.read_text(encoding="utf-8"))
-            self.assertEqual(data["deepface"], {"embeddings": []})
-            self.assertEqual(data["mediapipe"]["geometry"], [geometry])
+            self.assertEqual(
+                [item["id"] for item in data["images"]],
+                ["image-1", "image-2"],
+            )
+            self.assertEqual(
+                [item["image_id"] for item in data["deepface"]["embeddings"]],
+                ["image-1", "image-2"],
+            )
+            self.assertEqual(
+                [item["image_id"] for item in data["mediapipe"]["geometry"]],
+                ["image-1", "image-2"],
+            )
+            self.assertEqual(len(data["deepface"]["embeddings"]), 2)
+            self.assertEqual(len(data["mediapipe"]["geometry"]), 2)
 
 
 if __name__ == "__main__":

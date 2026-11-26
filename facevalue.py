@@ -17,6 +17,16 @@ MODEL_URL = (
 MODEL_CACHE_DIRECTORY = Path(
     os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
 ) / "facevalue"
+DEEPFACE_MODEL_NAME = "SFace"
+PROCRUSTES_ANCHOR_INDICES = (263, 33, 10, 152, 1, 168)
+PROCRUSTES_TARGET = (
+    (1.0, 0.0, 0.0),
+    (-1.0, 0.0, 0.0),
+    (0.0, 0.0, 1.5),
+    (0.0, 0.0, -1.5),
+    (0.0, -0.45, -0.15),
+    (0.0, -0.15, 0.5),
+)
 
 
 def parse_boolean(value: str) -> bool:
@@ -55,7 +65,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return arguments
 
 
-def first_image(directory: Path) -> Path:
+def first_images(directory: Path, count: int = 2) -> list[Path]:
     if not directory.is_dir():
         raise NotADirectoryError(f"face image directory not found: {directory}")
 
@@ -67,9 +77,12 @@ def first_image(directory: Path) -> Path:
         ),
         key=lambda path: path.name.casefold(),
     )
-    if not images:
-        raise FileNotFoundError(f"no supported images found in: {directory}")
-    return images[0]
+    if len(images) < count:
+        raise FileNotFoundError(
+            f"expected at least {count} supported images in {directory}; "
+            f"found {len(images)}"
+        )
+    return images[:count]
 
 
 def model_path() -> Path:
@@ -88,6 +101,79 @@ def model_path() -> Path:
             ) from error
         download_path.replace(destination)
     return destination
+
+
+def procrustes_face_forward(landmarks: list[dict[str, float]]) -> dict[str, Any]:
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise RuntimeError(
+            "MediaPipe dependencies are missing; install requirements.txt"
+        ) from error
+
+    required_index = max(PROCRUSTES_ANCHOR_INDICES)
+    if len(landmarks) <= required_index:
+        raise ValueError(
+            "not enough MediaPipe landmarks for Procrustes face alignment"
+        )
+
+    points = np.asarray(
+        [
+            (landmark["x"], landmark["z"], -landmark["y"])
+            for landmark in landmarks
+        ]
+    )
+    source_anchors = points[list(PROCRUSTES_ANCHOR_INDICES)]
+    target_anchors = np.asarray(PROCRUSTES_TARGET)
+    source_center = source_anchors.mean(axis=0)
+    target_center = target_anchors.mean(axis=0)
+    centered_source = source_anchors - source_center
+    centered_target = target_anchors - target_center
+
+    left_vectors, singular_values, right_vectors = np.linalg.svd(
+        centered_source.T @ centered_target
+    )
+    reflection_signs = np.ones(3)
+    if np.linalg.det(left_vectors @ right_vectors) < 0:
+        reflection_signs[-1] = -1
+    rotation = left_vectors @ np.diag(reflection_signs) @ right_vectors
+    source_squared_scale = np.sum(centered_source * centered_source)
+    if source_squared_scale == 0:
+        raise ValueError("cannot align degenerate MediaPipe face geometry")
+    scale = np.sum(singular_values * reflection_signs) / source_squared_scale
+    translation = target_center - scale * source_center @ rotation
+    aligned_points = scale * points @ rotation + translation
+    aligned_anchors = aligned_points[list(PROCRUSTES_ANCHOR_INDICES)]
+    residual = np.sqrt(
+        np.mean(np.sum((aligned_anchors - target_anchors) ** 2, axis=1))
+    )
+
+    transform = np.eye(4)
+    transform[:3, :3] = scale * rotation.T
+    transform[:3, 3] = translation
+    aligned_landmarks = [
+        {"x": float(point[0]), "y": float(point[1]), "z": float(point[2])}
+        for point in aligned_points
+    ]
+
+    return {
+        "method": "3d-similarity-procrustes-fixed-frontal-template",
+        "anchor_landmark_indices": list(PROCRUSTES_ANCHOR_INDICES),
+        "target_anchor_points": [
+            {"x": point[0], "y": point[1], "z": point[2]}
+            for point in PROCRUSTES_TARGET
+        ],
+        "landmark_count": len(aligned_landmarks),
+        "landmarks": aligned_landmarks,
+        "embedding": [
+            coordinate
+            for landmark in aligned_landmarks
+            for coordinate in (landmark["x"], landmark["y"], landmark["z"])
+        ],
+        "scale": float(scale),
+        "rms_anchor_error": float(residual),
+        "transform_matrix": transform.tolist(),
+    }
 
 
 def extract_mediapipe_geometry(image_path: Path) -> dict[str, Any]:
@@ -136,12 +222,14 @@ def extract_mediapipe_geometry(image_path: Path) -> dict[str, Any]:
         matrix.tolist()
         for matrix in result.facial_transformation_matrixes
     ]
+    procrustes = procrustes_face_forward(landmarks)
 
     return {
         "landmark_count": len(landmarks),
         "landmarks": landmarks,
         "embedding": embedding,
         "facial_transformation_matrixes": transformation_matrixes,
+        "face_forward": procrustes,
         "image": {
             "path": str(image_path),
             "width_px": int(image_rgb.shape[1]),
@@ -150,10 +238,57 @@ def extract_mediapipe_geometry(image_path: Path) -> dict[str, Any]:
     }
 
 
-def build_output(geometry: dict[str, Any]) -> dict[str, Any]:
+def extract_deepface_embedding(image_path: Path) -> dict[str, Any]:
+    try:
+        from deepface import DeepFace
+    except ImportError as error:
+        raise RuntimeError(
+            "DeepFace dependencies are missing; install requirements.txt"
+        ) from error
+
+    results = DeepFace.represent(
+        img_path=str(image_path),
+        model_name=DEEPFACE_MODEL_NAME,
+        detector_backend="opencv",
+        enforce_detection=True,
+        max_faces=1,
+    )
+    if not results:
+        raise ValueError(f"DeepFace did not detect a face in: {image_path}")
+
+    result = results[0]
     return {
-        "deepface": {"embeddings": []},
-        "mediapipe": {"geometry": [geometry]},
+        "model": DEEPFACE_MODEL_NAME,
+        "dimension_count": len(result["embedding"]),
+        "embedding": [float(value) for value in result["embedding"]],
+        "face_confidence": result["face_confidence"],
+        "facial_area": result["facial_area"],
+        "image_path": str(image_path),
+    }
+
+
+def build_output(
+    geometries: list[dict[str, Any]],
+    deepface_embeddings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    image_records = []
+    for index, (geometry, deepface_embedding) in enumerate(
+        zip(geometries, deepface_embeddings, strict=True), start=1
+    ):
+        image_id = f"image-{index}"
+        geometry["image_id"] = image_id
+        deepface_embedding["image_id"] = image_id
+        image_records.append(
+            {
+                "id": image_id,
+                "path": geometry["image"]["path"],
+            }
+        )
+
+    return {
+        "images": image_records,
+        "deepface": {"embeddings": deepface_embeddings},
+        "mediapipe": {"geometry": geometries},
     }
 
 
@@ -174,62 +309,102 @@ def show_window(data: dict[str, Any]) -> None:
             "visualization dependencies are missing; install requirements.txt"
         ) from error
 
-    geometry = data["mediapipe"]["geometry"][0]
-    image_info = geometry["image"]
-    image_path = Path(image_info["path"])
-
     from PIL import Image
 
-    with Image.open(image_path) as source_image:
-        image_rgb = np.asarray(source_image.convert("RGB"))
-
-    landmarks = geometry["landmarks"]
-    x_pixels = np.asarray([point["x"] for point in landmarks]) * image_info["width_px"]
-    y_pixels = np.asarray([point["y"] for point in landmarks]) * image_info["height_px"]
-    embedding = np.asarray(geometry["embedding"])
-    x_points = np.asarray([point["x"] for point in landmarks])
-    depth_points = np.asarray([point["z"] for point in landmarks])
-    vertical_points = np.asarray([-point["y"] for point in landmarks])
-
-    figure = plt.figure(figsize=(14, 10))
+    figure = plt.figure(figsize=(16, 20))
     figure.canvas.manager.set_window_title("FaceValue")
-    image_axis = figure.add_subplot(2, 2, 1)
-    geometry_axis = figure.add_subplot(2, 2, 2)
-    embedding_axis = figure.add_subplot(2, 2, 3)
-    rotating_axis = figure.add_subplot(2, 2, 4, projection="3d")
+    rotating_axes = []
 
-    image_axis.imshow(image_rgb)
-    image_axis.set_title("Source image")
-    image_axis.axis("off")
+    for column, (image_record, geometry, deepface_record) in enumerate(
+        zip(
+            data["images"],
+            data["mediapipe"]["geometry"],
+            data["deepface"]["embeddings"],
+            strict=True,
+        ),
+        start=1,
+    ):
+        image_info = geometry["image"]
+        with Image.open(image_info["path"]) as source_image:
+            image_rgb = np.asarray(source_image.convert("RGB"))
 
-    geometry_axis.imshow(image_rgb)
-    geometry_axis.scatter(x_pixels, y_pixels, c="red", s=3)
-    geometry_axis.set_title("MediaPipe geometry")
-    geometry_axis.axis("off")
+        landmarks = geometry["landmarks"]
+        x_pixels = (
+            np.asarray([point["x"] for point in landmarks]) * image_info["width_px"]
+        )
+        y_pixels = (
+            np.asarray([point["y"] for point in landmarks]) * image_info["height_px"]
+        )
+        mediapipe_embedding = np.asarray(geometry["embedding"])
+        deepface_embedding = np.asarray(deepface_record["embedding"])
+        x_points = np.asarray([point["x"] for point in landmarks])
+        depth_points = np.asarray([point["z"] for point in landmarks])
+        vertical_points = np.asarray([-point["y"] for point in landmarks])
 
-    normalized = embedding.reshape(1, -1)
-    embedding_axis.imshow(normalized, cmap="viridis", aspect="auto")
-    embedding_axis.set_yticks([])
-    embedding_axis.set_xlabel("MediaPipe normalized coordinates")
-    if data["deepface"]["embeddings"]:
-        embedding_axis.set_title("DeepFace / MediaPipe embeddings")
-    else:
-        embedding_axis.set_title("MediaPipe embedding\n(DeepFace pending)")
+        image_axis = figure.add_subplot(5, 2, column)
+        geometry_axis = figure.add_subplot(5, 2, 2 + column)
+        embedding_axis = figure.add_subplot(5, 2, 4 + column)
+        rotating_axis = figure.add_subplot(5, 2, 6 + column, projection="3d")
+        face_forward_axis = figure.add_subplot(
+            5, 2, 8 + column, projection="3d"
+        )
+        rotating_axes.append(rotating_axis)
 
-    rotating_axis.scatter(
-        x_points,
-        depth_points,
-        vertical_points,
-        c=np.asarray(range(len(landmarks))),
-        cmap="viridis",
-        s=3,
-    )
-    rotating_axis.set_title("Rotating 3D face points")
-    rotating_axis.set_box_aspect((1, 1, 1))
-    rotating_axis.set_axis_off()
+        image_axis.imshow(image_rgb)
+        image_axis.set_title(
+            f"{image_record['id']}: {Path(image_record['path']).name}"
+        )
+        image_axis.axis("off")
+
+        geometry_axis.imshow(image_rgb)
+        geometry_axis.scatter(x_pixels, y_pixels, c="red", s=3)
+        geometry_axis.set_title("MediaPipe 2D geometry")
+        geometry_axis.axis("off")
+
+        embedding_axis.plot(
+            np.linspace(0, 1, len(deepface_embedding)),
+            deepface_embedding,
+            label=f"DeepFace {deepface_record['model']}",
+        )
+        embedding_axis.plot(
+            np.linspace(0, 1, len(mediapipe_embedding)),
+            mediapipe_embedding,
+            label="MediaPipe geometry",
+        )
+        embedding_axis.set_title("Face embeddings")
+        embedding_axis.set_xlabel("Normalized vector position")
+        embedding_axis.set_ylabel("Value")
+        embedding_axis.legend()
+
+        rotating_axis.scatter(
+            x_points,
+            depth_points,
+            vertical_points,
+            c=np.asarray(range(len(landmarks))),
+            cmap="viridis",
+            s=3,
+        )
+        rotating_axis.set_title("Rotating 3D face points")
+        rotating_axis.set_box_aspect((1, 1, 1))
+        rotating_axis.set_axis_off()
+
+        face_forward_landmarks = geometry["face_forward"]["landmarks"]
+        face_forward_axis.scatter(
+            [point["x"] for point in face_forward_landmarks],
+            [point["y"] for point in face_forward_landmarks],
+            [point["z"] for point in face_forward_landmarks],
+            c=np.asarray(range(len(face_forward_landmarks))),
+            cmap="viridis",
+            s=3,
+        )
+        face_forward_axis.view_init(elev=0, azim=-90)
+        face_forward_axis.set_title("Procrustes face-forward points")
+        face_forward_axis.set_box_aspect((1, 1, 1))
+        face_forward_axis.set_axis_off()
 
     def rotate(frame: int) -> tuple[Any, ...]:
-        rotating_axis.view_init(elev=10, azim=frame * 0.5)
+        for rotating_axis in rotating_axes:
+            rotating_axis.view_init(elev=10, azim=frame * 0.5)
         return ()
 
     animation = FuncAnimation(
@@ -251,8 +426,13 @@ def run(arguments: argparse.Namespace) -> None:
     if arguments.fdir is None:
         return
 
-    image_path = first_image(arguments.fdir)
-    data = build_output(extract_mediapipe_geometry(image_path))
+    image_paths = first_images(arguments.fdir)
+    geometries = []
+    deepface_embeddings = []
+    for image_path in image_paths:
+        geometries.append(extract_mediapipe_geometry(image_path))
+        deepface_embeddings.append(extract_deepface_embedding(image_path))
+    data = build_output(geometries, deepface_embeddings)
     if arguments.output is not None:
         write_output(arguments.output, data)
     if arguments.window:
