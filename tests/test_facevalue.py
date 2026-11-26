@@ -5,26 +5,27 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import facevalue
+import face as facevalue
+import facevalue as application
 
 
 class FaceValueTests(unittest.TestCase):
     def test_no_arguments_do_nothing(self) -> None:
         with patch.object(facevalue, "supported_images") as supported_images:
-            self.assertEqual(facevalue.main([]), 0)
+            self.assertEqual(application.main([]), 0)
         supported_images.assert_not_called()
 
     def test_boolean_window_argument(self) -> None:
-        self.assertTrue(facevalue.parse_arguments(["--window", "true"]).window)
-        self.assertFalse(facevalue.parse_arguments(["--window", "false"]).window)
+        self.assertTrue(application.parse_arguments(["--window", "true"]).window)
+        self.assertFalse(application.parse_arguments(["--window", "false"]).window)
 
     def test_input_argument_rejects_non_json_file(self) -> None:
         with self.assertRaises(SystemExit):
-            facevalue.parse_arguments(["--input", "data.txt"])
+            application.parse_arguments(["--input", "data.txt"])
 
     def test_input_and_fdir_are_mutually_exclusive(self) -> None:
         with self.assertRaises(SystemExit):
-            facevalue.parse_arguments(
+            application.parse_arguments(
                 ["--input", "data.json", "--fdir", "images"]
             )
 
@@ -51,7 +52,12 @@ class FaceValueTests(unittest.TestCase):
                 patch.object(facevalue, "show_window") as show_window,
                 patch.object(facevalue, "supported_images") as supported_images,
             ):
-                facevalue.run(arguments)
+                facevalue.run(
+                    arguments.fdir,
+                    getattr(arguments, "input", None),
+                    arguments.output,
+                    arguments.window,
+                )
 
             supported_images.assert_not_called()
             show_window.assert_called_once_with(data)
@@ -160,7 +166,12 @@ class FaceValueTests(unittest.TestCase):
                     side_effect=[deepface_embedding_1, deepface_embedding_2],
                 ),
             ):
-                facevalue.run(arguments)
+                facevalue.run(
+                    arguments.fdir,
+                    getattr(arguments, "input", None),
+                    arguments.output,
+                    arguments.window,
+                )
 
             data = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(
@@ -251,7 +262,12 @@ class FaceValueTests(unittest.TestCase):
                     return_value=deepface_embedding,
                 ),
             ):
-                facevalue.run(arguments)
+                facevalue.run(
+                    arguments.fdir,
+                    getattr(arguments, "input", None),
+                    arguments.output,
+                    arguments.window,
+                )
 
             data = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(data["images"][0]["status"], "failed")
