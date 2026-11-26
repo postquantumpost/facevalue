@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import asyncio
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -76,12 +75,10 @@ def run(arguments: argparse.Namespace) -> None:
     if arguments.desktop is not None:
         config = desk.read_config(arguments.desktop)
         state["desktop_config"] = config
-        asyncio.run(
-            desk.display_desktop(
-                config,
-                update_seconds,
-                state=state,
-            )
+        desk.display_desktop(
+            config,
+            update_seconds,
+            state=state,
         )
         return
     face.run(
