@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 
 import desk
+import facevalue
 
 
 class DesktopTests(unittest.TestCase):
@@ -88,6 +89,51 @@ class DesktopTests(unittest.TestCase):
 
         self.assertTrue(stop_event.is_set())
         self.assertIsInstance(frame_queue.get_nowait(), RuntimeError)
+
+    def test_desktop_display_check_verifies_second_region(self) -> None:
+        screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
+
+        with (
+            patch(
+                "facevalue.desk.region_contains_text",
+                side_effect=[True, True],
+            ) as contains_text,
+            patch("builtins.print") as print_message,
+        ):
+            result = facevalue.verify_desktop_display(screenshot)
+
+        self.assertTrue(result[0])
+        self.assertIn("continuing", result[1])
+        self.assertEqual(contains_text.call_count, 2)
+        self.assertEqual(
+            contains_text.call_args_list[1].args[1],
+            facevalue.nominal_alter_face_and_hair,
+        )
+        self.assertEqual(
+            contains_text.call_args_list[1].args[4],
+            "Alter Face & Hair",
+        )
+        print_message.assert_called_once_with(
+            "Verified Cosmetics is displayed.",
+            flush=True,
+        )
+
+    def test_desktop_display_check_stops_after_missing_cosmetics(self) -> None:
+        screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
+
+        with (
+            patch(
+                "facevalue.desk.region_contains_text",
+                return_value=False,
+            ) as contains_text,
+            patch("builtins.print") as print_message,
+        ):
+            result = facevalue.verify_desktop_display(screenshot)
+
+        self.assertFalse(result[0])
+        self.assertIn("Cosmetics is not displayed", result[1])
+        contains_text.assert_called_once()
+        print_message.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -158,17 +158,31 @@ alter_jaw = [
 ]
 
 
-def verify_cosmetics_display(screenshot: Any) -> tuple[bool, str]:
-    found = desk.region_contains_text(
+def verify_desktop_display(screenshot: Any) -> tuple[bool, str]:
+    cosmetics_found = desk.region_contains_text(
         screenshot,
         nominal_cosmetics,
         nominal_screen_width,
         nominal_screen_height,
         "Cosmetics",
     )
-    if found:
-        return True, "Verified Cosmetics is displayed; continuing desktop monitoring."
-    return False, "Cosmetics is not displayed; exiting."
+    if not cosmetics_found:
+        return False, "Cosmetics is not displayed; exiting."
+    print("Verified Cosmetics is displayed.", flush=True)
+
+    alter_face_and_hair_found = desk.region_contains_text(
+        screenshot,
+        nominal_alter_face_and_hair,
+        nominal_screen_width,
+        nominal_screen_height,
+        "Alter Face & Hair",
+    )
+    if alter_face_and_hair_found:
+        return (
+            True,
+            "Verified Alter Face & Hair is displayed; continuing desktop monitoring.",
+        )
+    return False, "Alter Face & Hair is not displayed; exiting."
 
 
 
@@ -237,7 +251,7 @@ def run(arguments: argparse.Namespace) -> None:
             config,
             update_seconds,
             state=state,
-            startup_screen_check=verify_cosmetics_display,
+            startup_screen_check=verify_desktop_display,
         )
         return
     face.run(
