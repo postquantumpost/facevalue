@@ -65,7 +65,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return arguments
 
 
-def first_images(directory: Path, count: int = 2) -> list[Path]:
+def supported_images(directory: Path) -> list[Path]:
     if not directory.is_dir():
         raise NotADirectoryError(f"face image directory not found: {directory}")
 
@@ -77,12 +77,9 @@ def first_images(directory: Path, count: int = 2) -> list[Path]:
         ),
         key=lambda path: path.name.casefold(),
     )
-    if len(images) < count:
-        raise FileNotFoundError(
-            f"expected at least {count} supported images in {directory}; "
-            f"found {len(images)}"
-        )
-    return images[:count]
+    if not images:
+        raise FileNotFoundError(f"no supported images found in: {directory}")
+    return images
 
 
 def model_path() -> Path:
@@ -432,7 +429,8 @@ def show_window(data: dict[str, Any]) -> None:
 
     from PIL import Image
 
-    figure = plt.figure(figsize=(22, 20))
+    column_count = len(data["images"]) + 1
+    figure = plt.figure(figsize=(7 * column_count, 20))
     figure.canvas.manager.set_window_title("FaceValue")
     rotating_axes = []
 
@@ -462,12 +460,24 @@ def show_window(data: dict[str, Any]) -> None:
         depth_points = np.asarray([point["z"] for point in landmarks])
         vertical_points = np.asarray([-point["y"] for point in landmarks])
 
-        image_axis = figure.add_subplot(5, 3, column)
-        geometry_axis = figure.add_subplot(5, 3, 3 + column)
-        embedding_axis = figure.add_subplot(5, 3, 6 + column)
-        rotating_axis = figure.add_subplot(5, 3, 9 + column, projection="3d")
+        image_axis = figure.add_subplot(5, column_count, column)
+        geometry_axis = figure.add_subplot(
+            5, column_count, column_count + column
+        )
+        embedding_axis = figure.add_subplot(
+            5, column_count, 2 * column_count + column
+        )
+        rotating_axis = figure.add_subplot(
+            5,
+            column_count,
+            3 * column_count + column,
+            projection="3d",
+        )
         face_forward_axis = figure.add_subplot(
-            5, 3, 12 + column, projection="3d"
+            5,
+            column_count,
+            4 * column_count + column,
+            projection="3d",
         )
         rotating_axes.append(rotating_axis)
 
@@ -534,7 +544,10 @@ def show_window(data: dict[str, Any]) -> None:
         consensus["mediapipe"]["embedding"]["embedding"]
     )
 
-    consensus_source_axis = figure.add_subplot(5, 3, 3)
+    consensus_column = column_count
+    consensus_source_axis = figure.add_subplot(
+        5, column_count, consensus_column
+    )
     consensus_source_axis.set_title("Consensus\nno source image")
     consensus_source_axis.text(
         0.5,
@@ -545,13 +558,17 @@ def show_window(data: dict[str, Any]) -> None:
     )
     consensus_source_axis.axis("off")
 
-    consensus_geometry_axis = figure.add_subplot(5, 3, 6)
+    consensus_geometry_axis = figure.add_subplot(
+        5, column_count, column_count + consensus_column
+    )
     consensus_geometry_axis.scatter(consensus_x, consensus_z, c="red", s=3)
     consensus_geometry_axis.set_title("Consensus 2D geometry")
     consensus_geometry_axis.set_aspect("equal")
     consensus_geometry_axis.axis("off")
 
-    consensus_embedding_axis = figure.add_subplot(5, 3, 9)
+    consensus_embedding_axis = figure.add_subplot(
+        5, column_count, 2 * column_count + consensus_column
+    )
     consensus_embedding_axis.plot(
         np.linspace(0, 1, len(consensus_deepface)),
         consensus_deepface,
@@ -567,7 +584,12 @@ def show_window(data: dict[str, Any]) -> None:
     consensus_embedding_axis.set_ylabel("Value")
     consensus_embedding_axis.legend()
 
-    consensus_rotating_axis = figure.add_subplot(5, 3, 12, projection="3d")
+    consensus_rotating_axis = figure.add_subplot(
+        5,
+        column_count,
+        3 * column_count + consensus_column,
+        projection="3d",
+    )
     consensus_rotating_axis.scatter(
         consensus_x,
         consensus_y,
@@ -581,7 +603,12 @@ def show_window(data: dict[str, Any]) -> None:
     consensus_rotating_axis.set_axis_off()
     rotating_axes.append(consensus_rotating_axis)
 
-    consensus_forward_axis = figure.add_subplot(5, 3, 15, projection="3d")
+    consensus_forward_axis = figure.add_subplot(
+        5,
+        column_count,
+        4 * column_count + consensus_column,
+        projection="3d",
+    )
     consensus_forward_axis.scatter(
         consensus_x,
         consensus_y,
@@ -619,7 +646,7 @@ def run(arguments: argparse.Namespace) -> None:
     if arguments.fdir is None:
         return
 
-    image_paths = first_images(arguments.fdir)
+    image_paths = supported_images(arguments.fdir)
     geometries = []
     deepface_embeddings = []
     for image_path in image_paths:

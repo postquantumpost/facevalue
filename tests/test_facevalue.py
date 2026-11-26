@@ -10,15 +10,15 @@ import facevalue
 
 class FaceValueTests(unittest.TestCase):
     def test_no_arguments_do_nothing(self) -> None:
-        with patch.object(facevalue, "first_images") as first_images:
+        with patch.object(facevalue, "supported_images") as supported_images:
             self.assertEqual(facevalue.main([]), 0)
-        first_images.assert_not_called()
+        supported_images.assert_not_called()
 
     def test_boolean_window_argument(self) -> None:
         self.assertTrue(facevalue.parse_arguments(["--window", "true"]).window)
         self.assertFalse(facevalue.parse_arguments(["--window", "false"]).window)
 
-    def test_first_images_uses_supported_files_in_name_order(self) -> None:
+    def test_supported_images_uses_every_supported_file_in_name_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
             (directory / "z.png").write_bytes(b"image")
@@ -27,8 +27,12 @@ class FaceValueTests(unittest.TestCase):
             (directory / "a.JPEG").write_bytes(b"image")
 
             self.assertEqual(
-                facevalue.first_images(directory),
-                [directory / "a.JPEG", directory / "middle.jpg"],
+                facevalue.supported_images(directory),
+                [
+                    directory / "a.JPEG",
+                    directory / "middle.jpg",
+                    directory / "z.png",
+                ],
             )
 
     def test_procrustes_face_forward_aligns_landmarks(self) -> None:
