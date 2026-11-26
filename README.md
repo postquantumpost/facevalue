@@ -8,8 +8,11 @@ desktop at up to 640 by 480 pixels. The full desktop remains visible with its
 aspect ratio preserved. The initial capture is followed by another capture
 every 10 seconds. At startup, the application view is verified by OCR: the
 expected `Cosmetics` heading is checked first, followed by `Alter Face & Hair`.
-If either is not present, the program displays a message and exits. The
-`tesseract` executable must be installed and available on `PATH`.
+Mouse control is then checked over the same VNC connection by selecting
+`Adjust Face Template` and verifying the resulting
+`Alter Face & Hair > Adjust Face Template` heading. If any verification fails,
+the program displays a message and exits. The `tesseract` executable must be
+installed and available on `PATH`.
 
 The login file requires `host`. `port` defaults to 5900, while `username` and
 `password` are optional because the required authentication fields depend on

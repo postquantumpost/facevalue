@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import asyncio
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -18,6 +19,8 @@ state: dict[str, Any] = {
 # Nominal screen size
 nominal_screen_width: int = 3840
 nominal_screen_height: int = 2160
+# VNC reports Retina framebuffer pixels, but pointer coordinates use logical pixels.
+desktop_pointer_scale: float = 0.5
 # The following screen locations are based on the
 # nominal screen size defined above. Scale them according
 # to the actual screen size at runtime.
@@ -185,6 +188,61 @@ def verify_desktop_display(screenshot: Any) -> tuple[bool, str]:
     return False, "Alter Face & Hair is not displayed; exiting."
 
 
+async def verify_mouse_control(
+    client: Any,
+    screenshot: Any,
+) -> tuple[bool, str, Any]:
+    try:
+        item_index = alter_face_and_hair_names.index("Adjust Face Template")
+    except ValueError as error:
+        raise RuntimeError(
+            "Adjust Face Template is missing from the menu definition"
+        ) from error
+
+    screen_height, screen_width = screenshot.shape[:2]
+    nominal_x = nominal_menu_anchor[0] + nominal_slider_start / 2
+    nominal_y = (
+        nominal_menu_anchor[1]
+        + nominal_item_height * item_index
+        + nominal_item_height / 2
+    )
+    x = round(
+        nominal_x
+        * screen_width
+        / nominal_screen_width
+        * desktop_pointer_scale
+    )
+    y = round(
+        nominal_y
+        * screen_height
+        / nominal_screen_height
+        * desktop_pointer_scale
+    )
+
+    await desk.click_at(client, x, y)
+    await asyncio.sleep(1.0)
+    updated_screenshot = await desk.capture_full_desktop(client)
+    found = desk.region_contains_text(
+        updated_screenshot,
+        nominal_alter_face_and_hair,
+        nominal_screen_width,
+        nominal_screen_height,
+        "Alter Face & Hair > Adjust Face Template",
+    )
+    if found:
+        return (
+            True,
+            "Verified mouse control by selecting Adjust Face Template; "
+            "continuing desktop monitoring.",
+            updated_screenshot,
+        )
+    return (
+        False,
+        "Unable to click Adjust Face Template; exiting.",
+        updated_screenshot,
+    )
+
+
 
 
 def parse_boolean(value: str) -> bool:
@@ -252,6 +310,7 @@ def run(arguments: argparse.Namespace) -> None:
             update_seconds,
             state=state,
             startup_screen_check=verify_desktop_display,
+            startup_control_check=verify_mouse_control,
         )
         return
     face.run(

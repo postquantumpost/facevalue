@@ -13,7 +13,7 @@ import zlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
 import numpy as np
 
@@ -31,6 +31,12 @@ class DesktopConfig:
     port: int = 5900
     username: str | None = None
     password: str | None = None
+
+
+StartupControlCheck = Callable[
+    [Any, np.ndarray],
+    Awaitable[tuple[bool, str, np.ndarray]],
+]
 
 
 def read_config(config_path: Path) -> DesktopConfig:
@@ -150,6 +156,16 @@ def region_contains_text(
         expected_text.casefold(),
     )
     return normalized_expected in detected_text
+
+
+async def click_at(client: Any, x: int, y: int) -> None:
+    client.mouse.move(x, y)
+    await client.drain()
+    await asyncio.sleep(0.05)
+    with client.mouse.hold():
+        await client.drain()
+        await asyncio.sleep(0.05)
+    await client.drain()
 
 
 @asynccontextmanager
@@ -514,6 +530,7 @@ async def capture_region(
     request_y: int,
     request_width: int,
     request_height: int,
+    tight_streams: dict[int, Any] | None = None,
 ) -> None:
     import asyncvnc
 
@@ -535,7 +552,8 @@ async def capture_region(
     )
     await client.drain()
     covered = np.zeros((request_height, request_width), dtype=np.bool_)
-    tight_streams: dict[int, Any] = {}
+    if tight_streams is None:
+        tight_streams = {}
 
     while not covered.all():
         message_type = await asyncvnc.read_int(client.reader, 1)
@@ -590,32 +608,30 @@ async def capture_region(
 
 
 async def capture_full_desktop(
-    config: DesktopConfig,
-    state: dict[str, Any] | None = None,
+    client: Any,
 ) -> np.ndarray:
-    async with open_desktop(config) as first_client:
-        width_px = first_client.video.width
-        height_px = first_client.video.height
+    width_px = client.video.width
+    height_px = client.video.height
     framebuffer = np.zeros((height_px, width_px, 4), dtype=np.uint8)
     tile_width_px = 640
     tile_height_px = 100
+    tight_streams = getattr(client, "_facevalue_tight_streams", None)
+    if tight_streams is None:
+        tight_streams = {}
+        client._facevalue_tight_streams = tight_streams
     for request_y in range(0, height_px, tile_height_px):
         for request_x in range(0, width_px, tile_width_px):
             request_width = min(tile_width_px, width_px - request_x)
             request_height = min(tile_height_px, height_px - request_y)
-            async with open_desktop(config) as client:
-                if state is not None:
-                    state["desktop_client"] = client
-                await capture_region(
-                    client,
-                    framebuffer,
-                    request_x,
-                    request_y,
-                    request_width,
-                    request_height,
-                )
-            if state is not None:
-                state["desktop_client"] = None
+            await capture_region(
+                client,
+                framebuffer,
+                request_x,
+                request_y,
+                request_width,
+                request_height,
+                tight_streams,
+            )
     return framebuffer
 
 
@@ -626,6 +642,7 @@ async def capture_desktop(
     stop_event: threading.Event,
     state: dict[str, Any] | None = None,
     startup_screen_check: StartupScreenCheck | None = None,
+    startup_control_check: StartupControlCheck | None = None,
 ) -> None:
     def publish(item: Any) -> None:
         try:
@@ -636,36 +653,55 @@ async def capture_desktop(
 
     try:
         publish("Connecting to VNC desktop...")
-        startup_checked = startup_screen_check is None
-        while not stop_event.is_set():
-            cycle_started = asyncio.get_running_loop().time()
-            screenshot = await asyncio.wait_for(
-                capture_full_desktop(config, state),
-                timeout=max(30.0, update_seconds),
-            )
-            if not startup_checked:
-                try:
-                    startup_ok, message = startup_screen_check(screenshot)
-                except (OSError, RuntimeError, ValueError) as error:
-                    startup_ok = False
-                    message = f"Desktop application check failed: {error}"
-                print(message, flush=True)
-                if not startup_ok:
-                    publish(RuntimeError(message))
-                    stop_event.set()
-                    break
-                startup_checked = True
-            publish(
-                f"Connected to {config.host}; full desktop captured"
-            )
-            publish(scale_desktop(screenshot))
-            await asyncio.sleep(
-                max(
-                    0.0,
-                    update_seconds
-                    - (asyncio.get_running_loop().time() - cycle_started),
+        async with open_desktop(config) as client:
+            if state is not None:
+                state["desktop_client"] = client
+            startup_checked = startup_screen_check is None
+            while not stop_event.is_set():
+                cycle_started = asyncio.get_running_loop().time()
+                screenshot = await asyncio.wait_for(
+                    capture_full_desktop(client),
+                    timeout=max(30.0, update_seconds),
                 )
-            )
+                if not startup_checked:
+                    try:
+                        startup_ok, message = startup_screen_check(screenshot)
+                    except (OSError, RuntimeError, ValueError) as error:
+                        startup_ok = False
+                        message = f"Desktop application check failed: {error}"
+                    print(message, flush=True)
+                    if not startup_ok:
+                        publish(RuntimeError(message))
+                        stop_event.set()
+                        break
+                    startup_checked = True
+                if startup_control_check is not None:
+                    try:
+                        control_ok, message, screenshot = (
+                            await startup_control_check(client, screenshot)
+                        )
+                    except (OSError, RuntimeError, ValueError) as error:
+                        control_ok = False
+                        message = f"Desktop control check failed: {error}"
+                    print(message, flush=True)
+                    if not control_ok:
+                        publish(RuntimeError(message))
+                        stop_event.set()
+                        break
+                    startup_control_check = None
+                if stop_event.is_set():
+                    break
+                publish(
+                    f"Connected to {config.host}; full desktop captured"
+                )
+                publish(scale_desktop(screenshot))
+                await asyncio.sleep(
+                    max(
+                        0.0,
+                        update_seconds
+                        - (asyncio.get_running_loop().time() - cycle_started),
+                    )
+                )
     except Exception as error:
         publish(RuntimeError(f"desktop connection failed: {error}"))
     finally:
@@ -678,6 +714,7 @@ def display_desktop(
     update_seconds: float,
     state: dict[str, Any] | None = None,
     startup_screen_check: StartupScreenCheck | None = None,
+    startup_control_check: StartupControlCheck | None = None,
 ) -> None:
     if update_seconds <= 0:
         raise ValueError("update_seconds must be greater than zero")
@@ -699,6 +736,7 @@ def display_desktop(
                 stop_event,
                 state,
                 startup_screen_check,
+                startup_control_check,
             )
         ),
         daemon=True,
