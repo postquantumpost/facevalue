@@ -271,6 +271,13 @@ def build_output(
     geometries: list[dict[str, Any]],
     deepface_embeddings: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise RuntimeError(
+            "numeric dependencies are missing; install requirements.txt"
+        ) from error
+
     image_records = []
     for index, (geometry, deepface_embedding) in enumerate(
         zip(geometries, deepface_embeddings, strict=True), start=1
@@ -285,10 +292,124 @@ def build_output(
             }
         )
 
+    deepface_vectors = np.asarray(
+        [record["embedding"] for record in deepface_embeddings]
+    )
+    vector_norms = np.linalg.norm(deepface_vectors, axis=1)
+    if np.any(vector_norms == 0):
+        raise ValueError("cannot create a consensus from a zero DeepFace embedding")
+    normalized_deepface_vectors = deepface_vectors / vector_norms[:, np.newaxis]
+    mean_deepface_vector = normalized_deepface_vectors.mean(axis=0)
+    consensus_deepface_norm = np.linalg.norm(mean_deepface_vector)
+    if consensus_deepface_norm == 0:
+        raise ValueError("DeepFace embeddings cancel during consensus generation")
+    mean_deepface_vector /= consensus_deepface_norm
+    deepface_cosine_similarities = normalized_deepface_vectors @ mean_deepface_vector
+
+    aligned_geometry = np.asarray(
+        [
+            [
+                (landmark["x"], landmark["y"], landmark["z"])
+                for landmark in geometry["face_forward"]["landmarks"]
+            ]
+            for geometry in geometries
+        ]
+    )
+    if aligned_geometry.shape[0:2] != (
+        len(geometries),
+        aligned_geometry.shape[1],
+    ):
+        raise ValueError("MediaPipe landmarks cannot be aligned for consensus")
+    consensus_landmarks_array = aligned_geometry.mean(axis=0)
+    landmark_variance_array = aligned_geometry.var(axis=0)
+    consensus_landmarks = [
+        {"x": float(point[0]), "y": float(point[1]), "z": float(point[2])}
+        for point in consensus_landmarks_array
+    ]
+    landmark_variance = [
+        {"x": float(point[0]), "y": float(point[1]), "z": float(point[2])}
+        for point in landmark_variance_array
+    ]
+    source_point_deviations = np.linalg.norm(
+        aligned_geometry - consensus_landmarks_array, axis=2
+    )
+
     return {
         "images": image_records,
         "deepface": {"embeddings": deepface_embeddings},
         "mediapipe": {"geometry": geometries},
+        "consensus": {
+            "id": "consensus",
+            "source_image_ids": [
+                image_record["id"] for image_record in image_records
+            ],
+            "deepface": {
+                "method": "l2-normalized-mean",
+                "model": deepface_embeddings[0]["model"],
+                "dimension_count": len(mean_deepface_vector),
+                "embedding": mean_deepface_vector.tolist(),
+                "source_cosine_similarity": [
+                    {
+                        "image_id": image_record["id"],
+                        "value": float(similarity),
+                    }
+                    for image_record, similarity in zip(
+                        image_records,
+                        deepface_cosine_similarities,
+                        strict=True,
+                    )
+                ],
+                "mean_source_cosine_similarity": float(
+                    deepface_cosine_similarities.mean()
+                ),
+            },
+            "mediapipe": {
+                "geometry": {
+                    "method": "mean-aligned-procrustes-landmarks",
+                    "landmark_count": len(consensus_landmarks),
+                    "landmarks": consensus_landmarks,
+                    "landmark_variance": landmark_variance,
+                    "mean_source_point_deviation": float(
+                        source_point_deviations.mean()
+                    ),
+                    "max_source_point_deviation": float(
+                        source_point_deviations.max()
+                    ),
+                },
+                "embedding": {
+                    "method": "flattened-consensus-landmarks",
+                    "dimension_count": len(consensus_landmarks) * 3,
+                    "embedding": [
+                        coordinate
+                        for landmark in consensus_landmarks
+                        for coordinate in (
+                            landmark["x"],
+                            landmark["y"],
+                            landmark["z"],
+                        )
+                    ],
+                },
+                "source_transforms": [
+                    {
+                        "image_id": image_record["id"],
+                        "method": geometry["face_forward"]["method"],
+                        "scale": geometry["face_forward"]["scale"],
+                        "rms_anchor_error": geometry["face_forward"][
+                            "rms_anchor_error"
+                        ],
+                        "anchor_landmark_indices": geometry["face_forward"][
+                            "anchor_landmark_indices"
+                        ],
+                        "transform_matrix": geometry["face_forward"][
+                            "transform_matrix"
+                        ],
+                    }
+                    for image_record, geometry in zip(
+                        image_records, geometries, strict=True
+                    )
+                ],
+            },
+        },
     }
 
 
@@ -311,7 +432,7 @@ def show_window(data: dict[str, Any]) -> None:
 
     from PIL import Image
 
-    figure = plt.figure(figsize=(16, 20))
+    figure = plt.figure(figsize=(22, 20))
     figure.canvas.manager.set_window_title("FaceValue")
     rotating_axes = []
 
@@ -341,12 +462,12 @@ def show_window(data: dict[str, Any]) -> None:
         depth_points = np.asarray([point["z"] for point in landmarks])
         vertical_points = np.asarray([-point["y"] for point in landmarks])
 
-        image_axis = figure.add_subplot(5, 2, column)
-        geometry_axis = figure.add_subplot(5, 2, 2 + column)
-        embedding_axis = figure.add_subplot(5, 2, 4 + column)
-        rotating_axis = figure.add_subplot(5, 2, 6 + column, projection="3d")
+        image_axis = figure.add_subplot(5, 3, column)
+        geometry_axis = figure.add_subplot(5, 3, 3 + column)
+        embedding_axis = figure.add_subplot(5, 3, 6 + column)
+        rotating_axis = figure.add_subplot(5, 3, 9 + column, projection="3d")
         face_forward_axis = figure.add_subplot(
-            5, 2, 8 + column, projection="3d"
+            5, 3, 12 + column, projection="3d"
         )
         rotating_axes.append(rotating_axis)
 
@@ -401,6 +522,78 @@ def show_window(data: dict[str, Any]) -> None:
         face_forward_axis.set_title("Procrustes face-forward points")
         face_forward_axis.set_box_aspect((1, 1, 1))
         face_forward_axis.set_axis_off()
+
+    consensus = data["consensus"]
+    consensus_geometry = consensus["mediapipe"]["geometry"]
+    consensus_landmarks = consensus_geometry["landmarks"]
+    consensus_x = np.asarray([point["x"] for point in consensus_landmarks])
+    consensus_y = np.asarray([point["y"] for point in consensus_landmarks])
+    consensus_z = np.asarray([point["z"] for point in consensus_landmarks])
+    consensus_deepface = np.asarray(consensus["deepface"]["embedding"])
+    consensus_mediapipe = np.asarray(
+        consensus["mediapipe"]["embedding"]["embedding"]
+    )
+
+    consensus_source_axis = figure.add_subplot(5, 3, 3)
+    consensus_source_axis.set_title("Consensus\nno source image")
+    consensus_source_axis.text(
+        0.5,
+        0.5,
+        "\n".join(consensus["source_image_ids"]),
+        ha="center",
+        va="center",
+    )
+    consensus_source_axis.axis("off")
+
+    consensus_geometry_axis = figure.add_subplot(5, 3, 6)
+    consensus_geometry_axis.scatter(consensus_x, consensus_z, c="red", s=3)
+    consensus_geometry_axis.set_title("Consensus 2D geometry")
+    consensus_geometry_axis.set_aspect("equal")
+    consensus_geometry_axis.axis("off")
+
+    consensus_embedding_axis = figure.add_subplot(5, 3, 9)
+    consensus_embedding_axis.plot(
+        np.linspace(0, 1, len(consensus_deepface)),
+        consensus_deepface,
+        label=f"DeepFace {consensus['deepface']['model']}",
+    )
+    consensus_embedding_axis.plot(
+        np.linspace(0, 1, len(consensus_mediapipe)),
+        consensus_mediapipe,
+        label="MediaPipe consensus",
+    )
+    consensus_embedding_axis.set_title("Consensus embeddings")
+    consensus_embedding_axis.set_xlabel("Normalized vector position")
+    consensus_embedding_axis.set_ylabel("Value")
+    consensus_embedding_axis.legend()
+
+    consensus_rotating_axis = figure.add_subplot(5, 3, 12, projection="3d")
+    consensus_rotating_axis.scatter(
+        consensus_x,
+        consensus_y,
+        consensus_z,
+        c=np.asarray(range(len(consensus_landmarks))),
+        cmap="viridis",
+        s=3,
+    )
+    consensus_rotating_axis.set_title("Rotating consensus 3D face points")
+    consensus_rotating_axis.set_box_aspect((1, 1, 1))
+    consensus_rotating_axis.set_axis_off()
+    rotating_axes.append(consensus_rotating_axis)
+
+    consensus_forward_axis = figure.add_subplot(5, 3, 15, projection="3d")
+    consensus_forward_axis.scatter(
+        consensus_x,
+        consensus_y,
+        consensus_z,
+        c=np.asarray(range(len(consensus_landmarks))),
+        cmap="viridis",
+        s=3,
+    )
+    consensus_forward_axis.view_init(elev=0, azim=-90)
+    consensus_forward_axis.set_title("Consensus face-forward points")
+    consensus_forward_axis.set_box_aspect((1, 1, 1))
+    consensus_forward_axis.set_axis_off()
 
     def rotate(frame: int) -> tuple[Any, ...]:
         for rotating_axis in rotating_axes:

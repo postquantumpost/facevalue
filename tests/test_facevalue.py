@@ -66,6 +66,19 @@ class FaceValueTests(unittest.TestCase):
                 "landmarks": [{"x": 0.1, "y": 0.2, "z": 0.3}],
                 "embedding": [0.1, 0.2, 0.3],
                 "facial_transformation_matrixes": [],
+                "face_forward": {
+                    "method": "test",
+                    "landmarks": [{"x": 0.1, "y": 0.2, "z": 0.3}],
+                    "scale": 1.0,
+                    "rms_anchor_error": 0.0,
+                    "anchor_landmark_indices": [0],
+                    "transform_matrix": [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                },
                 "image": {
                     "path": str(image_path_1),
                     "width_px": 10,
@@ -122,6 +135,22 @@ class FaceValueTests(unittest.TestCase):
             )
             self.assertEqual(len(data["deepface"]["embeddings"]), 2)
             self.assertEqual(len(data["mediapipe"]["geometry"]), 2)
+            self.assertEqual(
+                data["consensus"]["source_image_ids"],
+                ["image-1", "image-2"],
+            )
+            self.assertEqual(
+                data["consensus"]["deepface"]["dimension_count"], 2
+            )
+            self.assertEqual(
+                data["consensus"]["mediapipe"]["geometry"]["landmark_count"], 1
+            )
+            self.assertEqual(
+                data["consensus"]["mediapipe"]["embedding"]["dimension_count"], 3
+            )
+            self.assertEqual(
+                len(data["consensus"]["mediapipe"]["source_transforms"]), 2
+            )
 
 
 if __name__ == "__main__":
