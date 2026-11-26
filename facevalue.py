@@ -15,6 +15,7 @@ state: dict[str, Any] = {
     "desktop_client": None,
     "desktop_config": None,
 }
+current_face_value_state: dict[str, int] = {}
 
 # UI location info
 # Nominal screen size
@@ -120,7 +121,7 @@ alter_mouth = {
 }
 
 alter_chin = {
-    "Chin Tip Protrusion" : None,
+    "Chin Tip Position" : None,
     "Chin Length" : None,
     "Chin Protrusion" : None,
     "Chin Depth" : None,
@@ -287,6 +288,132 @@ async def return_to_menu(
     return False, f"Backspace did not return to {expected_heading}; exiting.", screenshot
 
 
+def read_leaf_integer(
+    screenshot: Any,
+    menu: dict[str, Any],
+    item_name: str,
+) -> tuple[int | None, str]:
+    item_index = menu_item_index(menu, item_name)
+    item_top = nominal_menu_anchor[1] + nominal_item_height * item_index
+    label_region = [
+        nominal_menu_anchor[0],
+        item_top,
+        nominal_menu_anchor[0] + nominal_slider_start,
+        item_top + nominal_item_height,
+    ]
+    if not desk.region_contains_text(
+        screenshot,
+        label_region,
+        nominal_screen_width,
+        nominal_screen_height,
+        item_name,
+    ):
+        return None, f"{item_name} is not displayed; exiting."
+
+    number_region = [
+        nominal_menu_anchor[0] + nominal_number_start,
+        item_top,
+        nominal_menu_anchor[0] + nominal_item_width,
+        item_top + nominal_item_height,
+    ]
+    number_text = desk.ocr_region_text(
+        screenshot,
+        number_region,
+        nominal_screen_width,
+        nominal_screen_height,
+        "-+0123456789",
+    )
+    match = re.search(r"[+-]?\d+", number_text)
+    if match is None:
+        return (
+            None,
+            f"Unable to read {item_name} as an integer: {number_text!r}; exiting.",
+        )
+    return int(match.group()), ""
+
+
+async def read_all_face_structure_values(
+    client: Any,
+    root_screenshot: Any,
+) -> tuple[bool, str, Any]:
+    selected, message, structure_screenshot = await select_menu_item(
+        client,
+        root_screenshot,
+        alter_face_and_hair_names,
+        "Face Structure",
+        "Alter Face & Hair > Face Structure",
+    )
+    if not selected:
+        return False, message, structure_screenshot
+
+    values: dict[str, int] = {}
+    for submenu_name, submenu in alter_face_structure.items():
+        if not isinstance(submenu, dict):
+            return (
+                False,
+                f"{submenu_name} is not a Face Structure submenu; exiting.",
+                structure_screenshot,
+            )
+        selected, message, submenu_screenshot = await select_menu_item(
+            client,
+            structure_screenshot,
+            alter_face_structure,
+            submenu_name,
+            f"Alter Face & Hair > Face Structure > {submenu_name}",
+        )
+        if not selected:
+            return False, message, submenu_screenshot
+
+        for item_name, child in submenu.items():
+            if child is not None:
+                return (
+                    False,
+                    f"{item_name} unexpectedly contains another menu; exiting.",
+                    submenu_screenshot,
+                )
+            value, error_message = read_leaf_integer(
+                submenu_screenshot,
+                submenu,
+                item_name,
+            )
+            if value is None:
+                await asyncio.sleep(0.5)
+                retry_screenshot = await desk.capture_full_desktop(client)
+                retry_value, retry_error = read_leaf_integer(
+                    retry_screenshot,
+                    submenu,
+                    item_name,
+                )
+                if retry_value is not None:
+                    submenu_screenshot = retry_screenshot
+                    value = retry_value
+                    error_message = retry_error
+            if value is None:
+                return False, error_message, submenu_screenshot
+            values[item_name] = value
+
+        returned, message, structure_screenshot = await return_to_menu(
+            client,
+            "Alter Face & Hair > Face Structure",
+            submenu_name,
+        )
+        if not returned:
+            return False, message, structure_screenshot
+
+    returned, message, root_screenshot = await return_to_menu(
+        client,
+        "Alter Face & Hair",
+        "Face Structure",
+    )
+    if not returned:
+        return False, message, root_screenshot
+
+    current_face_value_state.clear()
+    current_face_value_state.update(values)
+    print(current_face_value_state, flush=True)
+    return True, "Read all Face Structure values.", root_screenshot
+
+
 async def verify_desktop_controls(
     client: Any,
     screenshot: Any,
@@ -390,7 +517,15 @@ async def verify_desktop_controls(
     )
     if not returned:
         return False, message, root_screenshot
-    return True, f"{message} Continuing desktop monitoring.", root_screenshot
+    print(message, flush=True)
+
+    read, message, final_screenshot = await read_all_face_structure_values(
+        client,
+        root_screenshot,
+    )
+    if not read:
+        return False, message, final_screenshot
+    return True, f"{message} Continuing desktop monitoring.", final_screenshot
 
 
 

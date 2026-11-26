@@ -287,6 +287,12 @@ class DesktopTests(unittest.TestCase):
                 "facevalue.desk.ocr_region_text",
                 return_value="123",
             ) as ocr_region,
+            patch(
+                "facevalue.read_all_face_structure_values",
+                new=AsyncMock(
+                    return_value=(True, "Read all Face Structure values.", root_screenshot)
+                ),
+            ) as read_all,
             patch("facevalue.asyncio.sleep", new=AsyncMock()) as sleep,
         ):
             result = asyncio.run(
@@ -343,6 +349,29 @@ class DesktopTests(unittest.TestCase):
             ocr_region.call_args.args[4],
             "-+0123456789",
         )
+        read_all.assert_awaited_once_with(client, root_screenshot)
+
+    def test_read_leaf_integer_validates_label_and_reads_number(self) -> None:
+        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+        with (
+            patch(
+                "facevalue.desk.region_contains_text",
+                return_value=True,
+            ) as contains_text,
+            patch(
+                "facevalue.desk.ocr_region_text",
+                return_value="-25",
+            ),
+        ):
+            value, error = facevalue.read_leaf_integer(
+                screenshot,
+                facevalue.alter_facial_balance,
+                "Nose Size",
+            )
+
+        self.assertEqual(value, -25)
+        self.assertEqual(error, "")
+        self.assertEqual(contains_text.call_args.args[4], "Nose Size")
 
     def test_controls_report_click_failure_without_backspace(self) -> None:
         screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
