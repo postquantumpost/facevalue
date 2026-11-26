@@ -1,0 +1,2 @@
+matplotlib>=3.9,<4
+mediapipe>=0.10.14,<0.11
