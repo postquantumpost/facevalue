@@ -293,6 +293,12 @@ class DesktopTests(unittest.TestCase):
                     return_value=(True, "Read all Face Structure values.", root_screenshot)
                 ),
             ) as read_all,
+            patch(
+                "facevalue.modify_random_face_values",
+                new=AsyncMock(
+                    return_value=(True, "Completed random modifications.", root_screenshot)
+                ),
+            ) as modify_random,
             patch("facevalue.asyncio.sleep", new=AsyncMock()) as sleep,
         ):
             result = asyncio.run(
@@ -350,6 +356,7 @@ class DesktopTests(unittest.TestCase):
             "-+0123456789",
         )
         read_all.assert_awaited_once_with(client, root_screenshot)
+        modify_random.assert_awaited_once_with(client, root_screenshot)
 
     def test_read_leaf_integer_validates_label_and_reads_number(self) -> None:
         screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
@@ -372,6 +379,67 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(value, -25)
         self.assertEqual(error, "")
         self.assertEqual(contains_text.call_args.args[4], "Nose Size")
+
+    def test_modify_random_face_values_updates_map_and_returns_home(self) -> None:
+        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+        client = object()
+        original_state = facevalue.current_face_value_state.copy()
+        facevalue.current_face_value_state.clear()
+        facevalue.current_face_value_state.update(
+            {
+                "Nose Size": 125,
+                "Jaw Width": 48,
+            }
+        )
+        try:
+            with (
+                patch(
+                    "facevalue.secrets.choice",
+                    side_effect=[
+                        "Nose Size", 1,
+                        "Jaw Width", -1,
+                        "Nose Size", -1,
+                    ],
+                ) as choice,
+                patch(
+                    "facevalue.select_menu_item",
+                    new=AsyncMock(return_value=(True, "selected", screenshot)),
+                ) as select_menu,
+                patch(
+                    "facevalue.return_to_menu",
+                    new=AsyncMock(return_value=(True, "returned", screenshot)),
+                ) as return_menu,
+                patch(
+                    "facevalue.desk.click_at",
+                    new=AsyncMock(),
+                ) as click_at,
+                patch(
+                    "facevalue.desk.press_key",
+                    new=AsyncMock(),
+                ) as press_key,
+            ):
+                result = asyncio.run(
+                    facevalue.modify_random_face_values(client, screenshot)
+                )
+
+            self.assertTrue(result[0])
+            self.assertEqual(
+                facevalue.current_face_value_state,
+                {"Nose Size": 125, "Jaw Width": 47},
+            )
+            self.assertEqual(choice.call_count, 6)
+            self.assertEqual(select_menu.await_count, 6)
+            self.assertEqual(return_menu.await_count, 6)
+            self.assertEqual(click_at.await_count, 3)
+            self.assertIn(call(client, "Right"), press_key.await_args_list)
+            self.assertIn(call(client, "Left"), press_key.await_args_list)
+            self.assertEqual(
+                press_key.await_args_list.count(call(client, "Return")),
+                3,
+            )
+        finally:
+            facevalue.current_face_value_state.clear()
+            facevalue.current_face_value_state.update(original_state)
 
     def test_controls_report_click_failure_without_backspace(self) -> None:
         screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)

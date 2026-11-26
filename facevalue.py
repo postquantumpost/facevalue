@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -242,23 +243,24 @@ async def select_menu_item(
     expected_heading: str,
 ) -> tuple[bool, str, Any]:
     x, y = menu_item_center(screenshot, menu, item_name)
-    await desk.click_at(client, x, y)
-    await asyncio.sleep(1.0)
-    updated_screenshot = await desk.capture_full_desktop(client)
-    found = desk.region_contains_text(
-        updated_screenshot,
-        nominal_alter_face_and_hair,
-        nominal_screen_width,
-        nominal_screen_height,
-        expected_heading,
-    )
-    if not found:
-        return (
-            False,
-            f"Unable to select {item_name}; exiting.",
+    updated_screenshot = screenshot
+    for _ in range(3):
+        await desk.click_at(client, x, y)
+        await asyncio.sleep(1.0)
+        updated_screenshot = await desk.capture_full_desktop(client)
+        if desk.region_contains_text(
             updated_screenshot,
-        )
-    return True, f"Verified menu {expected_heading}.", updated_screenshot
+            nominal_alter_face_and_hair,
+            nominal_screen_width,
+            nominal_screen_height,
+            expected_heading,
+        ):
+            return True, f"Verified menu {expected_heading}.", updated_screenshot
+    return (
+        False,
+        f"Unable to select {item_name}; exiting.",
+        updated_screenshot,
+    )
 
 
 async def return_to_menu(
@@ -414,6 +416,96 @@ async def read_all_face_structure_values(
     return True, "Read all Face Structure values.", root_screenshot
 
 
+def face_structure_leaf_paths() -> dict[str, tuple[str, dict[str, Any]]]:
+    paths: dict[str, tuple[str, dict[str, Any]]] = {}
+    for submenu_name, submenu in alter_face_structure.items():
+        if not isinstance(submenu, dict):
+            continue
+        for item_name, child in submenu.items():
+            if child is None:
+                paths[item_name] = (submenu_name, submenu)
+    return paths
+
+
+async def modify_random_face_values(
+    client: Any,
+    root_screenshot: Any,
+    modification_count: int = 3,
+) -> tuple[bool, str, Any]:
+    if not current_face_value_state:
+        return False, "No face values are available to modify; exiting.", root_screenshot
+    leaf_paths = face_structure_leaf_paths()
+    item_names = tuple(current_face_value_state)
+    current_screenshot = root_screenshot
+
+    for iteration in range(modification_count):
+        item_name = secrets.choice(item_names)
+        delta = secrets.choice((-1, 1))
+        try:
+            submenu_name, submenu = leaf_paths[item_name]
+        except KeyError:
+            return (
+                False,
+                f"{item_name} is missing from the Face Structure tree; exiting.",
+                current_screenshot,
+            )
+
+        selected, message, structure_screenshot = await select_menu_item(
+            client,
+            current_screenshot,
+            alter_face_and_hair_names,
+            "Face Structure",
+            "Alter Face & Hair > Face Structure",
+        )
+        if not selected:
+            return False, message, structure_screenshot
+
+        selected, message, submenu_screenshot = await select_menu_item(
+            client,
+            structure_screenshot,
+            alter_face_structure,
+            submenu_name,
+            f"Alter Face & Hair > Face Structure > {submenu_name}",
+        )
+        if not selected:
+            return False, message, submenu_screenshot
+
+        x, y = menu_item_center(submenu_screenshot, submenu, item_name)
+        await desk.click_at(client, x, y)
+        await desk.press_key(client, "Right" if delta > 0 else "Left")
+        await desk.press_key(client, "Return")
+        await asyncio.sleep(1.0)
+        current_face_value_state[item_name] += delta
+        print(
+            f"Modified {item_name}: {delta:+d} "
+            f"({current_face_value_state[item_name]}) "
+            f"[{iteration + 1}/{modification_count}]",
+            flush=True,
+        )
+
+        returned, message, structure_screenshot = await return_to_menu(
+            client,
+            "Alter Face & Hair > Face Structure",
+            submenu_name,
+        )
+        if not returned:
+            return False, message, structure_screenshot
+
+        returned, message, current_screenshot = await return_to_menu(
+            client,
+            "Alter Face & Hair",
+            "Face Structure",
+        )
+        if not returned:
+            return False, message, current_screenshot
+
+    return (
+        True,
+        f"Completed {modification_count} random face value modifications.",
+        current_screenshot,
+    )
+
+
 async def verify_desktop_controls(
     client: Any,
     screenshot: Any,
@@ -525,7 +617,15 @@ async def verify_desktop_controls(
     )
     if not read:
         return False, message, final_screenshot
-    return True, f"{message} Continuing desktop monitoring.", final_screenshot
+
+    modified, message, modified_screenshot = await modify_random_face_values(
+        client,
+        final_screenshot,
+    )
+    if not modified:
+        return False, message, modified_screenshot
+    print(current_face_value_state, flush=True)
+    return True, f"{message} Continuing desktop monitoring.", modified_screenshot
 
 
 
