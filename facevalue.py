@@ -29,6 +29,10 @@ PROCRUSTES_TARGET = (
 )
 
 
+class FaceDetectionError(ValueError):
+    pass
+
+
 def parse_boolean(value: str) -> bool:
     normalized = value.lower()
     if normalized == "true":
@@ -203,7 +207,7 @@ def extract_mediapipe_geometry(image_path: Path) -> dict[str, Any]:
         )
 
     if not result.face_landmarks:
-        raise ValueError(f"no face was detected in: {image_path}")
+        raise FaceDetectionError(f"no face was detected in: {image_path}")
 
     face = result.face_landmarks[0]
     landmarks = [
@@ -243,15 +247,18 @@ def extract_deepface_embedding(image_path: Path) -> dict[str, Any]:
             "DeepFace dependencies are missing; install requirements.txt"
         ) from error
 
-    results = DeepFace.represent(
-        img_path=str(image_path),
-        model_name=DEEPFACE_MODEL_NAME,
-        detector_backend="opencv",
-        enforce_detection=True,
-        max_faces=1,
-    )
+    try:
+        results = DeepFace.represent(
+            img_path=str(image_path),
+            model_name=DEEPFACE_MODEL_NAME,
+            detector_backend="opencv",
+            enforce_detection=True,
+            max_faces=1,
+        )
+    except ValueError as error:
+        raise FaceDetectionError(str(error)) from error
     if not results:
-        raise ValueError(f"DeepFace did not detect a face in: {image_path}")
+        raise FaceDetectionError(f"DeepFace did not detect a face in: {image_path}")
 
     result = results[0]
     return {
@@ -265,8 +272,7 @@ def extract_deepface_embedding(image_path: Path) -> dict[str, Any]:
 
 
 def build_output(
-    geometries: list[dict[str, Any]],
-    deepface_embeddings: list[dict[str, Any]],
+    image_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
     try:
         import numpy as np
@@ -275,19 +281,40 @@ def build_output(
             "numeric dependencies are missing; install requirements.txt"
         ) from error
 
-    image_records = []
-    for index, (geometry, deepface_embedding) in enumerate(
-        zip(geometries, deepface_embeddings, strict=True), start=1
+    image_records = [
+        {
+            "id": result["id"],
+            "path": str(result["path"]),
+            "status": result["status"],
+            **({"error": result["error"]} if result["status"] == "failed" else {}),
+        }
+        for result in image_results
+    ]
+    successful_results = [
+        result for result in image_results if result["status"] == "ok"
+    ]
+    geometries = [result["mediapipe"] for result in successful_results]
+    deepface_embeddings = [
+        result["deepface"] for result in successful_results
+    ]
+    for result, geometry, deepface_embedding in zip(
+        successful_results, geometries, deepface_embeddings, strict=True
     ):
-        image_id = f"image-{index}"
-        geometry["image_id"] = image_id
-        deepface_embedding["image_id"] = image_id
-        image_records.append(
-            {
-                "id": image_id,
-                "path": geometry["image"]["path"],
-            }
-        )
+        geometry["image_id"] = result["id"]
+        deepface_embedding["image_id"] = result["id"]
+
+    if not successful_results:
+        return {
+            "images": image_records,
+            "deepface": {"embeddings": []},
+            "mediapipe": {"geometry": []},
+            "consensus": {
+                "id": "consensus",
+                "status": "unavailable",
+                "source_image_ids": [],
+                "message": "No faces were recognized; consensus was not generated.",
+            },
+        }
 
     deepface_vectors = np.asarray(
         [record["embedding"] for record in deepface_embeddings]
@@ -337,8 +364,9 @@ def build_output(
         "mediapipe": {"geometry": geometries},
         "consensus": {
             "id": "consensus",
+            "status": "ok",
             "source_image_ids": [
-                image_record["id"] for image_record in image_records
+                result["id"] for result in successful_results
             ],
             "deepface": {
                 "method": "l2-normalized-mean",
@@ -351,7 +379,7 @@ def build_output(
                         "value": float(similarity),
                     }
                     for image_record, similarity in zip(
-                        image_records,
+                        successful_results,
                         deepface_cosine_similarities,
                         strict=True,
                     )
@@ -402,7 +430,7 @@ def build_output(
                         ],
                     }
                     for image_record, geometry in zip(
-                        image_records, geometries, strict=True
+                        successful_results, geometries, strict=True
                     )
                 ],
             },
@@ -433,33 +461,14 @@ def show_window(data: dict[str, Any]) -> None:
     figure = plt.figure(figsize=(7 * column_count, 20))
     figure.canvas.manager.set_window_title("FaceValue")
     rotating_axes = []
+    geometry_by_id = {
+        record["image_id"]: record for record in data["mediapipe"]["geometry"]
+    }
+    deepface_by_id = {
+        record["image_id"]: record for record in data["deepface"]["embeddings"]
+    }
 
-    for column, (image_record, geometry, deepface_record) in enumerate(
-        zip(
-            data["images"],
-            data["mediapipe"]["geometry"],
-            data["deepface"]["embeddings"],
-            strict=True,
-        ),
-        start=1,
-    ):
-        image_info = geometry["image"]
-        with Image.open(image_info["path"]) as source_image:
-            image_rgb = np.asarray(source_image.convert("RGB"))
-
-        landmarks = geometry["landmarks"]
-        x_pixels = (
-            np.asarray([point["x"] for point in landmarks]) * image_info["width_px"]
-        )
-        y_pixels = (
-            np.asarray([point["y"] for point in landmarks]) * image_info["height_px"]
-        )
-        mediapipe_embedding = np.asarray(geometry["embedding"])
-        deepface_embedding = np.asarray(deepface_record["embedding"])
-        x_points = np.asarray([point["x"] for point in landmarks])
-        depth_points = np.asarray([point["z"] for point in landmarks])
-        vertical_points = np.asarray([-point["y"] for point in landmarks])
-
+    for column, image_record in enumerate(data["images"], start=1):
         image_axis = figure.add_subplot(5, column_count, column)
         geometry_axis = figure.add_subplot(
             5, column_count, column_count + column
@@ -479,6 +488,45 @@ def show_window(data: dict[str, Any]) -> None:
             4 * column_count + column,
             projection="3d",
         )
+        if image_record["status"] != "ok":
+            image_axis.set_title(Path(image_record["path"]).name)
+            image_axis.text(
+                0.5,
+                0.5,
+                f"Recognition failed\n{image_record['error']}",
+                ha="center",
+                va="center",
+                wrap=True,
+            )
+            for axis in (
+                image_axis,
+                geometry_axis,
+                embedding_axis,
+                rotating_axis,
+                face_forward_axis,
+            ):
+                axis.axis("off")
+            continue
+
+        geometry = geometry_by_id[image_record["id"]]
+        deepface_record = deepface_by_id[image_record["id"]]
+        image_info = geometry["image"]
+        with Image.open(image_info["path"]) as source_image:
+            image_rgb = np.asarray(source_image.convert("RGB"))
+
+        landmarks = geometry["landmarks"]
+        x_pixels = (
+            np.asarray([point["x"] for point in landmarks]) * image_info["width_px"]
+        )
+        y_pixels = (
+            np.asarray([point["y"] for point in landmarks]) * image_info["height_px"]
+        )
+        mediapipe_embedding = np.asarray(geometry["embedding"])
+        deepface_embedding = np.asarray(deepface_record["embedding"])
+        x_points = np.asarray([point["x"] for point in landmarks])
+        depth_points = np.asarray([point["z"] for point in landmarks])
+        vertical_points = np.asarray([-point["y"] for point in landmarks])
+
         rotating_axes.append(rotating_axis)
 
         image_axis.imshow(image_rgb)
@@ -534,6 +582,51 @@ def show_window(data: dict[str, Any]) -> None:
         face_forward_axis.set_axis_off()
 
     consensus = data["consensus"]
+    consensus_column = column_count
+    consensus_source_axis = figure.add_subplot(
+        5, column_count, consensus_column
+    )
+    consensus_geometry_axis = figure.add_subplot(
+        5, column_count, column_count + consensus_column
+    )
+    consensus_embedding_axis = figure.add_subplot(
+        5, column_count, 2 * column_count + consensus_column
+    )
+    consensus_rotating_axis = figure.add_subplot(
+        5,
+        column_count,
+        3 * column_count + consensus_column,
+        projection="3d",
+    )
+    consensus_forward_axis = figure.add_subplot(
+        5,
+        column_count,
+        4 * column_count + consensus_column,
+        projection="3d",
+    )
+    if consensus["status"] != "ok":
+        consensus_source_axis.text(
+            0.5,
+            0.5,
+            consensus["message"],
+            ha="center",
+            va="center",
+            wrap=True,
+        )
+        for axis in (
+            consensus_source_axis,
+            consensus_geometry_axis,
+            consensus_embedding_axis,
+            consensus_rotating_axis,
+            consensus_forward_axis,
+        ):
+            axis.axis("off")
+        plt.tight_layout()
+        figure.canvas.draw()
+        plt.show()
+        plt.close(figure)
+        return
+
     consensus_geometry = consensus["mediapipe"]["geometry"]
     consensus_landmarks = consensus_geometry["landmarks"]
     consensus_x = np.asarray([point["x"] for point in consensus_landmarks])
@@ -544,10 +637,6 @@ def show_window(data: dict[str, Any]) -> None:
         consensus["mediapipe"]["embedding"]["embedding"]
     )
 
-    consensus_column = column_count
-    consensus_source_axis = figure.add_subplot(
-        5, column_count, consensus_column
-    )
     consensus_source_axis.set_title("Consensus\nno source image")
     consensus_source_axis.text(
         0.5,
@@ -557,18 +646,10 @@ def show_window(data: dict[str, Any]) -> None:
         va="center",
     )
     consensus_source_axis.axis("off")
-
-    consensus_geometry_axis = figure.add_subplot(
-        5, column_count, column_count + consensus_column
-    )
     consensus_geometry_axis.scatter(consensus_x, consensus_z, c="red", s=3)
     consensus_geometry_axis.set_title("Consensus 2D geometry")
     consensus_geometry_axis.set_aspect("equal")
     consensus_geometry_axis.axis("off")
-
-    consensus_embedding_axis = figure.add_subplot(
-        5, column_count, 2 * column_count + consensus_column
-    )
     consensus_embedding_axis.plot(
         np.linspace(0, 1, len(consensus_deepface)),
         consensus_deepface,
@@ -583,13 +664,6 @@ def show_window(data: dict[str, Any]) -> None:
     consensus_embedding_axis.set_xlabel("Normalized vector position")
     consensus_embedding_axis.set_ylabel("Value")
     consensus_embedding_axis.legend()
-
-    consensus_rotating_axis = figure.add_subplot(
-        5,
-        column_count,
-        3 * column_count + consensus_column,
-        projection="3d",
-    )
     consensus_rotating_axis.scatter(
         consensus_x,
         consensus_y,
@@ -602,13 +676,6 @@ def show_window(data: dict[str, Any]) -> None:
     consensus_rotating_axis.set_box_aspect((1, 1, 1))
     consensus_rotating_axis.set_axis_off()
     rotating_axes.append(consensus_rotating_axis)
-
-    consensus_forward_axis = figure.add_subplot(
-        5,
-        column_count,
-        4 * column_count + consensus_column,
-        projection="3d",
-    )
     consensus_forward_axis.scatter(
         consensus_x,
         consensus_y,
@@ -646,13 +713,23 @@ def run(arguments: argparse.Namespace) -> None:
     if arguments.fdir is None:
         return
 
-    image_paths = supported_images(arguments.fdir)
-    geometries = []
-    deepface_embeddings = []
-    for image_path in image_paths:
-        geometries.append(extract_mediapipe_geometry(image_path))
-        deepface_embeddings.append(extract_deepface_embedding(image_path))
-    data = build_output(geometries, deepface_embeddings)
+    image_results = []
+    for index, image_path in enumerate(supported_images(arguments.fdir), start=1):
+        result: dict[str, Any] = {
+            "id": f"image-{index}",
+            "path": image_path,
+            "status": "ok",
+        }
+        try:
+            result["mediapipe"] = extract_mediapipe_geometry(image_path)
+            result["deepface"] = extract_deepface_embedding(image_path)
+        except FaceDetectionError as error:
+            result["status"] = "failed"
+            result["error"] = str(error)
+            result.pop("mediapipe", None)
+            result.pop("deepface", None)
+        image_results.append(result)
+    data = build_output(image_results)
     if arguments.output is not None:
         write_output(arguments.output, data)
     if arguments.window:

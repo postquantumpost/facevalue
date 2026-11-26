@@ -156,6 +156,89 @@ class FaceValueTests(unittest.TestCase):
                 len(data["consensus"]["mediapipe"]["source_transforms"]), 2
             )
 
+    def test_run_records_failed_images_and_excludes_them_from_consensus(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "face-1.png").write_bytes(b"image")
+            (directory / "face-2.png").write_bytes(b"image")
+            output_path = directory / "result.json"
+            geometry = {
+                "landmark_count": 1,
+                "landmarks": [{"x": 0.1, "y": 0.2, "z": 0.3}],
+                "embedding": [0.1, 0.2, 0.3],
+                "facial_transformation_matrixes": [],
+                "face_forward": {
+                    "method": "test",
+                    "landmarks": [{"x": 0.1, "y": 0.2, "z": 0.3}],
+                    "scale": 1.0,
+                    "rms_anchor_error": 0.0,
+                    "anchor_landmark_indices": [0],
+                    "transform_matrix": [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                },
+                "image": {
+                    "path": str(directory / "face-1.png"),
+                    "width_px": 10,
+                    "height_px": 10,
+                },
+            }
+            deepface_embedding = {
+                "model": "SFace",
+                "dimension_count": 2,
+                "embedding": [0.1, 0.2],
+                "face_confidence": 0.99,
+                "facial_area": {"x": 1, "y": 2, "w": 3, "h": 4},
+                "image_path": str(directory / "face-1.png"),
+            }
+            arguments = argparse.Namespace(
+                fdir=directory, output=output_path, window=False
+            )
+
+            with (
+                patch.object(
+                    facevalue,
+                    "extract_mediapipe_geometry",
+                    side_effect=[
+                        facevalue.FaceDetectionError("no face detected"),
+                        geometry,
+                    ],
+                ),
+                patch.object(
+                    facevalue,
+                    "extract_deepface_embedding",
+                    return_value=deepface_embedding,
+                ),
+            ):
+                facevalue.run(arguments)
+
+            data = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["images"][0]["status"], "failed")
+            self.assertTrue(data["images"][0]["path"].endswith("face-1.png"))
+            self.assertEqual(data["consensus"]["source_image_ids"], ["image-2"])
+            self.assertEqual(len(data["deepface"]["embeddings"]), 1)
+            self.assertEqual(len(data["mediapipe"]["geometry"]), 1)
+
+    def test_no_detected_faces_skip_consensus(self) -> None:
+        image_results = [
+            {
+                "id": "image-1",
+                "path": Path("missing-face.png"),
+                "status": "failed",
+                "error": "no face detected",
+            }
+        ]
+
+        data = facevalue.build_output(image_results)
+
+        self.assertEqual(data["consensus"]["status"], "unavailable")
+        self.assertEqual(data["consensus"]["source_image_ids"], [])
+        self.assertIn("No faces were recognized", data["consensus"]["message"])
+        self.assertEqual(data["images"][0]["path"], "missing-face.png")
+
 
 if __name__ == "__main__":
     unittest.main()
