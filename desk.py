@@ -91,22 +91,19 @@ def scale_desktop(
     return np.asarray(canvas)
 
 
-def region_contains_text(
+def ocr_region_text(
     image: np.ndarray,
     nominal_region: Sequence[int],
     nominal_width: int,
     nominal_height: int,
-    expected_text: str,
-) -> bool:
+    character_whitelist: str | None = None,
+) -> str:
     from PIL import Image, ImageEnhance, ImageOps
 
     if nominal_width <= 0 or nominal_height <= 0:
         raise ValueError("nominal screen dimensions must be greater than zero")
     if len(nominal_region) != 4:
         raise ValueError("nominal region must contain four coordinates")
-    if not expected_text:
-        raise ValueError("expected text must not be empty")
-
     height_px, width_px = image.shape[:2]
     x1, y1, x2, y2 = (
         round(nominal_region[0] * width_px / nominal_width),
@@ -131,7 +128,18 @@ def region_contains_text(
     region.save(image_bytes, format="PNG")
     try:
         result = subprocess.run(
-            ["tesseract", "stdin", "stdout", "--psm", "7"],
+            [
+                "tesseract",
+                "stdin",
+                "stdout",
+                "--psm",
+                "7",
+                *(
+                    ["-c", f"tessedit_char_whitelist={character_whitelist}"]
+                    if character_whitelist
+                    else []
+                ),
+            ],
             input=image_bytes.getvalue(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -145,10 +153,28 @@ def region_contains_text(
         details = result.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"OCR failed: {details or 'tesseract exited unsuccessfully'}")
 
+    return result.stdout.decode("utf-8", errors="replace").strip()
+
+
+def region_contains_text(
+    image: np.ndarray,
+    nominal_region: Sequence[int],
+    nominal_width: int,
+    nominal_height: int,
+    expected_text: str,
+) -> bool:
+    if not expected_text:
+        raise ValueError("expected text must not be empty")
+
     detected_text = re.sub(
         r"[^a-z0-9]",
         "",
-        result.stdout.decode("utf-8", errors="replace").casefold(),
+        ocr_region_text(
+            image,
+            nominal_region,
+            nominal_width,
+            nominal_height,
+        ).casefold(),
     )
     normalized_expected = re.sub(
         r"[^a-z0-9]",
@@ -159,12 +185,21 @@ def region_contains_text(
 
 
 async def click_at(client: Any, x: int, y: int) -> None:
-    client.mouse.move(x, y)
-    await client.drain()
-    await asyncio.sleep(0.05)
+    start_x = client.mouse.x
+    start_y = client.mouse.y
+    movement_steps = 40
+    for step in range(1, movement_steps + 1):
+        fraction = step / movement_steps
+        client.mouse.move(
+            round(start_x + (x - start_x) * fraction),
+            round(start_y + (y - start_y) * fraction),
+        )
+        await client.drain()
+        await asyncio.sleep(0.025)
+    await asyncio.sleep(0.5)
     with client.mouse.hold():
         await client.drain()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.1)
     await client.drain()
 
 

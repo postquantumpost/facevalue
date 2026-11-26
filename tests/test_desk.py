@@ -7,7 +7,7 @@ import unittest
 import zlib
 from pathlib import Path
 from subprocess import CompletedProcess
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import numpy as np
 
@@ -67,6 +67,25 @@ class DesktopTests(unittest.TestCase):
             )
 
         self.assertTrue(contains_text)
+
+    def test_click_at_moves_through_intermediate_points(self) -> None:
+        client = unittest.mock.Mock()
+        client.mouse.x = 0
+        client.mouse.y = 0
+        client.drain = AsyncMock()
+        client.mouse.hold.return_value = unittest.mock.MagicMock(
+            __enter__=unittest.mock.Mock(),
+            __exit__=unittest.mock.Mock(return_value=False),
+        )
+
+        with patch("desk.asyncio.sleep", new=AsyncMock()) as sleep:
+            asyncio.run(desk.click_at(client, 100, 80))
+
+        self.assertEqual(client.mouse.move.call_count, 40)
+        client.mouse.move.assert_any_call(50, 40)
+        client.mouse.move.assert_called_with(100, 80)
+        self.assertEqual(client.drain.await_count, 42)
+        self.assertEqual(sleep.await_count, 42)
 
     def test_tight_compression_stream_survives_rectangle_boundaries(self) -> None:
         compressor = zlib.compressobj()
@@ -193,7 +212,7 @@ class DesktopTests(unittest.TestCase):
             result = facevalue.verify_desktop_display(screenshot)
 
         self.assertTrue(result[0])
-        self.assertIn("continuing", result[1])
+        self.assertIn("continuing", result[1].lower())
         self.assertEqual(contains_text.call_count, 2)
         self.assertEqual(
             contains_text.call_args_list[1].args[1],
@@ -226,9 +245,12 @@ class DesktopTests(unittest.TestCase):
         print_message.assert_not_called()
 
     def test_controls_click_then_backspace_and_recheck(self) -> None:
-        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
-        updated_screenshot = np.ones((2160, 3840, 4), dtype=np.uint8)
-        restored_screenshot = np.full((2160, 3840, 4), 2, dtype=np.uint8)
+        screenshots = [
+            np.full((2160, 3840, 4), index, dtype=np.uint8)
+            for index in range(7)
+        ]
+        screenshot = screenshots[0]
+        root_screenshot = screenshots[6]
         client = object()
 
         with (
@@ -239,7 +261,7 @@ class DesktopTests(unittest.TestCase):
             patch(
                 "facevalue.desk.capture_full_desktop",
                 new=AsyncMock(
-                    side_effect=[updated_screenshot, restored_screenshot]
+                    side_effect=screenshots[1:],
                 ),
             ) as capture_full,
             patch(
@@ -248,8 +270,23 @@ class DesktopTests(unittest.TestCase):
             ) as press_key,
             patch(
                 "facevalue.desk.region_contains_text",
-                side_effect=[True, True, False],
+                side_effect=[
+                    True,
+                    True,
+                    False,
+                    True,
+                    True,
+                    True,
+                    True,
+                    False,
+                    True,
+                    False,
+                ],
             ) as contains_text,
+            patch(
+                "facevalue.desk.ocr_region_text",
+                return_value="123",
+            ) as ocr_region,
             patch("facevalue.asyncio.sleep", new=AsyncMock()) as sleep,
         ):
             result = asyncio.run(
@@ -257,12 +294,23 @@ class DesktopTests(unittest.TestCase):
             )
 
         self.assertTrue(result[0])
-        self.assertIn("continuing", result[1])
-        self.assertIs(result[2], restored_screenshot)
-        click_at.assert_awaited_once_with(client, 310, 189)
-        press_key.assert_awaited_once_with(client, "BackSpace")
-        self.assertEqual(sleep.await_count, 2)
-        self.assertEqual(capture_full.await_count, 2)
+        self.assertIn("continuing", result[1].lower())
+        self.assertIs(result[2], root_screenshot)
+        self.assertEqual(
+            click_at.await_args_list,
+            [
+                call(client, 310, 189),
+                call(client, 310, 245),
+                call(client, 310, 189),
+            ],
+        )
+        self.assertEqual(press_key.await_args_list, [
+            call(client, "BackSpace"),
+            call(client, "BackSpace"),
+            call(client, "BackSpace"),
+        ])
+        self.assertEqual(sleep.await_count, 6)
+        self.assertEqual(capture_full.await_count, 6)
         self.assertEqual(
             contains_text.call_args_list[0].args[4],
             "Alter Face & Hair > Adjust Face Template",
@@ -272,8 +320,28 @@ class DesktopTests(unittest.TestCase):
             "Alter Face & Hair",
         )
         self.assertEqual(
-            contains_text.call_args_list[2].args[4],
-            "Adjust Face Template",
+            contains_text.call_args_list[5].args[4],
+            "Nose Size",
+        )
+        self.assertEqual(
+            contains_text.call_args_list[3].args[4],
+            "Alter Face & Hair > Face Structure",
+        )
+        self.assertEqual(
+            contains_text.call_args_list[4].args[4],
+            "Alter Face & Hair > Face Structure > Facial Balance",
+        )
+        self.assertEqual(
+            contains_text.call_args_list[7].args[4],
+            "Facial Balance",
+        )
+        self.assertEqual(
+            contains_text.call_args_list[9].args[4],
+            "Face Structure",
+        )
+        self.assertEqual(
+            ocr_region.call_args.args[4],
+            "-+0123456789",
         )
 
     def test_controls_report_click_failure_without_backspace(self) -> None:
@@ -298,7 +366,7 @@ class DesktopTests(unittest.TestCase):
             )
 
         self.assertFalse(result[0])
-        self.assertIn("Unable to click", result[1])
+        self.assertIn("Unable to select", result[1])
         press_key.assert_not_awaited()
 
     def test_controls_report_backspace_failure(self) -> None:
