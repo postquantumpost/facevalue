@@ -2,9 +2,12 @@
 
 import argparse
 import asyncio
+import copy
+import queue
 import re
 import secrets
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -186,12 +189,15 @@ def verify_desktop_display(screenshot: Any) -> tuple[bool, str]:
         return False, "Cosmetics is not displayed; exiting."
     print("Verified Cosmetics is displayed.", flush=True)
 
-    alter_face_and_hair_found = desk.region_contains_text(
+    heading = desk.ocr_region_text(
         screenshot,
         nominal_alter_face_and_hair,
         nominal_screen_width,
         nominal_screen_height,
-        "Alter Face & Hair",
+    )
+    alter_face_and_hair_found = (
+        re.sub(r"[^a-z0-9]", "", heading.casefold())
+        == "alterfacehair"
     )
     if alter_face_and_hair_found:
         return (
@@ -729,7 +735,7 @@ def run(arguments: argparse.Namespace) -> None:
     if arguments.desktop is not None:
         config = desk.read_config(arguments.desktop)
         state["desktop_config"] = config
-        if arguments.testmode and arguments.input is None:
+        if arguments.testmode and arguments.input is None and not arguments.window:
             try:
                 asyncio.run(
                     desk.run_desktop_sequence(
@@ -743,30 +749,82 @@ def run(arguments: argparse.Namespace) -> None:
                 print(error, flush=True)
             return
         if arguments.input is not None:
-            try:
-                screenshot = asyncio.run(
-                    desk.run_desktop_sequence(
-                        config,
-                        state=state,
-                        startup_screen_check=verify_desktop_display,
-                        startup_control_check=verify_desktop_controls,
-                    )
-                )
-            except RuntimeError as error:
-                print(error, flush=True)
-                return
             data = face.read_input(arguments.input)
             from PIL import Image
 
-            _, width_px = screenshot.shape[:2]
-            desktop_face = screenshot[:, round(width_px * 0.52) :, :3]
             with tempfile.TemporaryDirectory() as temporary_directory:
                 desktop_face_path = Path(temporary_directory) / "desktop-face.png"
-                Image.fromarray(desktop_face).save(desktop_face_path)
-                face.add_display_only_image(data, desktop_face_path)
-                if arguments.output is not None:
-                    face.write_output(arguments.output, data)
-                face.show_window(data)
+                face.add_display_only_placeholder(data)
+                face_figure = face.show_window(data, block=False)
+                completed_updates: queue.Queue[Any] = queue.Queue(maxsize=1)
+                analysis_running = threading.Event()
+
+                def update_face_feedback(screenshot: Any) -> None:
+                    nonlocal face_figure
+                    import matplotlib.pyplot as plt
+
+                    try:
+                        updated_data = completed_updates.get_nowait()
+                    except queue.Empty:
+                        updated_data = None
+                    if updated_data is not None:
+                        data.clear()
+                        data.update(updated_data)
+                        if arguments.output is not None:
+                            face.write_output(arguments.output, data)
+                        plt.close(face_figure)
+                        face_figure = face.show_window(data, block=False)
+
+                    if analysis_running.is_set():
+                        return
+                    _, width_px = screenshot.shape[:2]
+                    desktop_face = screenshot[
+                        :, round(width_px * 0.52) :, :3
+                    ]
+                    Image.fromarray(desktop_face).save(desktop_face_path)
+                    analysis_data = copy.deepcopy(data)
+                    analysis_running.set()
+
+                    def analyze() -> None:
+                        try:
+                            face.add_display_only_image(
+                                analysis_data,
+                                desktop_face_path,
+                            )
+                            completed_updates.put_nowait(analysis_data)
+                        except (RuntimeError, ValueError) as error:
+                            print(
+                                f"Desktop face update failed: {error}",
+                                flush=True,
+                            )
+                        finally:
+                            analysis_running.clear()
+
+                    threading.Thread(target=analyze, daemon=True).start()
+
+                try:
+                    desk.display_desktop(
+                        config,
+                        update_seconds,
+                        state=state,
+                        startup_screen_check=verify_desktop_display,
+                        startup_control_check=verify_desktop_controls,
+                        on_screenshot=update_face_feedback,
+                    )
+                finally:
+                    import matplotlib.pyplot as plt
+
+                    plt.close(face_figure)
+            return
+        if arguments.window and arguments.testmode:
+            desk.display_desktop(
+                config,
+                update_seconds,
+                state=state,
+                startup_screen_check=verify_desktop_display,
+                startup_control_check=verify_desktop_controls,
+                stop_after_startup=True,
+            )
             return
         desk.display_desktop(
             config,

@@ -685,6 +685,7 @@ async def capture_desktop(
     state: dict[str, Any] | None = None,
     startup_screen_check: StartupScreenCheck | None = None,
     startup_control_check: StartupControlCheck | None = None,
+    stop_after_startup: bool = False,
 ) -> None:
     def publish(item: Any) -> None:
         try:
@@ -717,6 +718,10 @@ async def capture_desktop(
                         stop_event.set()
                         break
                     startup_checked = True
+                if state is not None:
+                    state["desktop_screenshot"] = screenshot
+                if startup_control_check is not None:
+                    publish(scale_desktop(screenshot))
                 if startup_control_check is not None:
                     try:
                         control_ok, message, screenshot = (
@@ -732,6 +737,12 @@ async def capture_desktop(
                         break
                     startup_control_check = None
                 if stop_event.is_set():
+                    break
+                if stop_after_startup and startup_checked:
+                    if state is not None:
+                        state["desktop_screenshot"] = screenshot
+                    publish(scale_desktop(screenshot))
+                    stop_event.set()
                     break
                 publish(
                     f"Connected to {config.host}; full desktop captured"
@@ -786,7 +797,9 @@ def display_desktop(
     state: dict[str, Any] | None = None,
     startup_screen_check: StartupScreenCheck | None = None,
     startup_control_check: StartupControlCheck | None = None,
-) -> None:
+    stop_after_startup: bool = False,
+    on_screenshot: Callable[[np.ndarray], None] | None = None,
+) -> np.ndarray | None:
     if update_seconds <= 0:
         raise ValueError("update_seconds must be greater than zero")
     try:
@@ -808,6 +821,7 @@ def display_desktop(
                 state,
                 startup_screen_check,
                 startup_control_check,
+                stop_after_startup,
             )
         ),
         daemon=True,
@@ -834,9 +848,10 @@ def display_desktop(
     )
     figure.patch.set_facecolor("black")
     last_frame = None
+    completion_frame_rendered = False
 
     def update_window() -> bool:
-        nonlocal last_frame
+        nonlocal last_frame, completion_frame_rendered
         try:
             while True:
                 item = frame_queue.get_nowait()
@@ -880,6 +895,14 @@ def display_desktop(
             axis.axis("off")
             figure.canvas.draw_idle()
             last_frame = None
+            if on_screenshot is not None and state is not None:
+                desktop_screenshot = state.get("desktop_screenshot")
+                if desktop_screenshot is not None:
+                    on_screenshot(desktop_screenshot)
+            if stop_event.is_set() and not worker.is_alive():
+                completion_frame_rendered = True
+        if completion_frame_rendered:
+            plt.close(figure)
         return True
 
     timer = figure.canvas.new_timer(interval=50)
@@ -892,3 +915,6 @@ def display_desktop(
         timer.stop()
         worker.join(timeout=1.0)
         plt.close(figure)
+    if state is None:
+        return None
+    return state.get("desktop_screenshot")

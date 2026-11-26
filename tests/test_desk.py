@@ -199,29 +199,60 @@ class DesktopTests(unittest.TestCase):
         open_desktop.assert_called_once_with(config)
         capture_full.assert_awaited_once_with(client)
 
+    def test_capture_worker_can_stop_after_startup_checks(self) -> None:
+        screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
+        frame_queue: queue.Queue[object] = queue.Queue(maxsize=1)
+        stop_event = threading.Event()
+        config = desk.DesktopConfig(host="desktop.example.test")
+        client = object()
+        desktop_context = AsyncMock()
+        desktop_context.__aenter__.return_value = client
+        state: dict[str, object] = {}
+
+        with (
+            patch("desk.open_desktop", return_value=desktop_context),
+            patch(
+                "desk.capture_full_desktop",
+                new=AsyncMock(return_value=screenshot),
+            ) as capture_full,
+            patch("builtins.print"),
+        ):
+            asyncio.run(
+                desk.capture_desktop(
+                    config,
+                    10.0,
+                    frame_queue,
+                    stop_event,
+                    state,
+                    startup_screen_check=lambda _: (True, "checked"),
+                    stop_after_startup=True,
+                )
+            )
+
+        self.assertTrue(stop_event.is_set())
+        capture_full.assert_awaited_once_with(client)
+        self.assertIs(state["desktop_screenshot"], screenshot)
+        self.assertIsInstance(frame_queue.get_nowait(), np.ndarray)
+
     def test_desktop_display_check_verifies_second_region(self) -> None:
         screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
 
         with (
             patch(
                 "facevalue.desk.region_contains_text",
-                side_effect=[True, True, False],
+                return_value=True,
             ) as contains_text,
+            patch(
+                "facevalue.desk.ocr_region_text",
+                return_value="Alter Face & Hair",
+            ),
             patch("builtins.print") as print_message,
         ):
             result = facevalue.verify_desktop_display(screenshot)
 
         self.assertTrue(result[0])
         self.assertIn("continuing", result[1].lower())
-        self.assertEqual(contains_text.call_count, 2)
-        self.assertEqual(
-            contains_text.call_args_list[1].args[1],
-            facevalue.nominal_alter_face_and_hair,
-        )
-        self.assertEqual(
-            contains_text.call_args_list[1].args[4],
-            "Alter Face & Hair",
-        )
+        contains_text.assert_called_once()
         print_message.assert_called_once_with(
             "Verified Cosmetics is displayed.",
             flush=True,

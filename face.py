@@ -431,7 +431,10 @@ def read_input(input_path: Path) -> dict[str, Any]:
     return data
 
 
-def show_window(data: dict[str, Any]) -> None:
+def show_window(
+    data: dict[str, Any],
+    block: bool = True,
+) -> Any:
     try:
         import matplotlib.pyplot as plt
         import numpy as np
@@ -631,9 +634,10 @@ def show_window(data: dict[str, Any]) -> None:
             axis.axis("off")
         plt.tight_layout()
         figure.canvas.draw()
-        plt.show()
-        plt.close(figure)
-        return
+        plt.show(block=block)
+        if block:
+            plt.close(figure)
+        return figure
 
     consensus_geometry = consensus["mediapipe"]["geometry"]
     consensus_landmarks = consensus_geometry["landmarks"]
@@ -713,8 +717,10 @@ def show_window(data: dict[str, Any]) -> None:
     )
     plt.tight_layout()
     figure.canvas.draw()
-    plt.show()
-    plt.close(figure)
+    plt.show(block=block)
+    if block:
+        plt.close(figure)
+    return figure
 
 
 def run(
@@ -772,6 +778,9 @@ def add_display_only_image(
         result["status"] = "failed"
         result["error"] = str(error)
 
+    data["images"][:] = [
+        record for record in data["images"] if record["id"] != image_id
+    ]
     data["images"].append(
         {
             "id": result["id"],
@@ -783,5 +792,32 @@ def add_display_only_image(
     if result["status"] == "ok":
         result["mediapipe"]["image_id"] = image_id
         result["deepface"]["image_id"] = image_id
+        data["mediapipe"]["geometry"][:] = [
+            record
+            for record in data["mediapipe"]["geometry"]
+            if record["image_id"] != image_id
+        ]
+        data["deepface"]["embeddings"][:] = [
+            record
+            for record in data["deepface"]["embeddings"]
+            if record["image_id"] != image_id
+        ]
         data["mediapipe"]["geometry"].append(result["mediapipe"])
         data["deepface"]["embeddings"].append(result["deepface"])
+
+
+def add_display_only_placeholder(
+    data: dict[str, Any],
+    image_id: str = "desktop-face",
+) -> None:
+    data["images"][:] = [
+        record for record in data["images"] if record["id"] != image_id
+    ]
+    data["images"].append(
+        {
+            "id": image_id,
+            "path": "Waiting for desktop face",
+            "status": "failed",
+            "error": "Waiting for the first desktop frame",
+        }
+    )
