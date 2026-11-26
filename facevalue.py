@@ -14,6 +14,164 @@ state: dict[str, Any] = {
     "desktop_config": None,
 }
 
+# UI location info
+# Nominal screen size
+nominal_screen_width: int = 3840
+nominal_screen_height: int = 2160
+# The following screen locations are based on the
+# nominal screen size defined above. Scale them according
+# to the actual screen size at runtime.
+# The coordinates are in the format [ x1, y1, x2, y2 ] with
+# zero being the top-left corner of the screen
+nominal_cosmetics = [ 231, 82, 507, 145 ]
+nominal_alter_face_and_hair = [ 684, 241, 2000, 295 ]
+# x1, y1
+nominal_menu_anchor = [ 270, 322 ]
+# For a menu item the bounding box is width x height. The
+# text label space is the left side of the bounding box
+# to the slider start. The slider space is from slider
+# start to number start. The number is from number start
+# to the end of the bounding box.
+nominal_item_width = 1726
+nominal_item_height = 112
+nominal_slider_start = 700
+nominal_number_start = 1585
+
+alter_face_and_hair_names = [
+    "Adjust Face Template",
+    "Face Structure",
+    "",
+    "Hair",
+    "Eyebrows",
+    "Facial Hair",
+    "Eyelashes",
+    "Eyes",
+    "Skin Features",
+    "Cosmetics",
+    "Tattoo/Mark/Eyepatch",
+    "",
+    "Similar Face"
+]
+
+alter_face_structure = [
+    "Facial Balance",
+    "Forehead/Glabella",
+    "Brow Ridge",
+    "Eyes",
+    "Nose Ridge",
+    "Nostrils",
+    "Cheeks",
+    "Lips",
+    "Mouth",
+    "Chin",
+    "Jaw"
+]
+
+alter_facial_balance = [
+    "Nose Size",
+    "Nose/Forehead Ratio",
+    "Face Protrusion",
+    "Vert. Face Ratio",
+    "Facial Feature Slant",
+    "Horiz. Face Ratio"
+]
+
+alter_forehead_glabella = [
+    "Forehead Depth",
+    "Forehead Protrusion",
+    "Nose Bridge Height",
+    "Bridge Protrusion 1",
+    "Bridge Protrusion 2",
+    "Nose Bridge Width"
+]
+
+alter_brow_ridge = [
+    "Brow Ridge Height",
+    "Inner Brow Ridge",
+    "Outer Brow Ridge"
+]
+
+alter_eyes = [
+    "Eye Position",
+    "Eye Size",
+    "Eye Slant",
+    "Eye Spacing"
+]
+
+alter_nose_ridge = [
+    "Nose Ridge Depth",
+    "Nose Ridge Length",
+    "Nose Position",
+    "Nose Tip Height",
+    "Nose Protrusion",
+    "Nose Height",
+    "Nose Slant"
+]
+
+alter_nostrils = [
+    "Nostril Slant",
+    "Nostril Size",
+    "Nostril Width"
+]
+
+alter_cheeks = [
+    "Cheekbone Height",
+    "Cheekbone Depth",
+    "Cheekbone Width",
+    "Cheekbone Protrusion",
+    "Cheeks"
+]
+
+alter_lips = [
+    "Lip Shape",
+    "Mouth Expression",
+    "Lip Fullness",
+    "Lip Size",
+    "Lip Protrusion",
+    "Lip Thickness"
+]
+
+alter_mouth = [
+    "Mouth Protrusion",
+    "Mouth Slant",
+    "Occlusion",
+    "Mouth Position",
+    "Mouth Width",
+    "Mouth-Chin Distance"
+]
+
+alter_chin = [
+    "Chin Tip Protrusion",
+    "Chin Length",
+    "Chin Protrusion",
+    "Chin Depth",
+    "Chin Size",
+    "Chin Height",
+    "Chin Width"
+]
+
+alter_jaw = [
+    "Jaw Protrusion",
+    "Jaw Width",
+    "Lower Jaw",
+    "Jaw Contour"
+]
+
+
+def verify_cosmetics_display(screenshot: Any) -> tuple[bool, str]:
+    found = desk.region_contains_text(
+        screenshot,
+        nominal_cosmetics,
+        nominal_screen_width,
+        nominal_screen_height,
+        "Cosmetics",
+    )
+    if found:
+        return True, "Verified Cosmetics is displayed; continuing desktop monitoring."
+    return False, "Cosmetics is not displayed; exiting."
+
+
+
 
 def parse_boolean(value: str) -> bool:
     normalized = value.lower()
@@ -79,6 +237,7 @@ def run(arguments: argparse.Namespace) -> None:
             config,
             update_seconds,
             state=state,
+            startup_screen_check=verify_cosmetics_display,
         )
         return
     face.run(

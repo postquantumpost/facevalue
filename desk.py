@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 
 import asyncio
+import io
 import json
 import queue
+import re
 import ssl
+import subprocess
 import threading
 import warnings
 import zlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -18,6 +21,8 @@ import numpy as np
 DESKTOP_WINDOW_WIDTH_PX = 640
 DESKTOP_WINDOW_HEIGHT_PX = 480
 CONNECT_TIMEOUT_SECONDS = 5.0
+
+StartupScreenCheck = Callable[[np.ndarray], tuple[bool, str]]
 
 
 @dataclass(frozen=True)
@@ -78,6 +83,73 @@ def scale_desktop(
     offset = ((width_px - source.width) // 2, (height_px - source.height) // 2)
     canvas.paste(source, offset)
     return np.asarray(canvas)
+
+
+def region_contains_text(
+    image: np.ndarray,
+    nominal_region: Sequence[int],
+    nominal_width: int,
+    nominal_height: int,
+    expected_text: str,
+) -> bool:
+    from PIL import Image, ImageEnhance, ImageOps
+
+    if nominal_width <= 0 or nominal_height <= 0:
+        raise ValueError("nominal screen dimensions must be greater than zero")
+    if len(nominal_region) != 4:
+        raise ValueError("nominal region must contain four coordinates")
+    if not expected_text:
+        raise ValueError("expected text must not be empty")
+
+    height_px, width_px = image.shape[:2]
+    x1, y1, x2, y2 = (
+        round(nominal_region[0] * width_px / nominal_width),
+        round(nominal_region[1] * height_px / nominal_height),
+        round(nominal_region[2] * width_px / nominal_width),
+        round(nominal_region[3] * height_px / nominal_height),
+    )
+    x1, x2 = max(0, min(width_px, x1)), max(0, min(width_px, x2))
+    y1, y2 = max(0, min(height_px, y1)), max(0, min(height_px, y2))
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError("scaled screen region is outside the screenshot")
+
+    region = Image.fromarray(np.asarray(image).copy()).crop((x1, y1, x2, y2))
+    region = ImageOps.grayscale(region)
+    region = ImageOps.autocontrast(region)
+    region = ImageEnhance.Contrast(region).enhance(2.0)
+    region = region.resize(
+        (region.width * 3, region.height * 3),
+        Image.Resampling.LANCZOS,
+    )
+    image_bytes = io.BytesIO()
+    region.save(image_bytes, format="PNG")
+    try:
+        result = subprocess.run(
+            ["tesseract", "stdin", "stdout", "--psm", "7"],
+            input=image_bytes.getvalue(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise RuntimeError(
+            "OCR failed because the tesseract executable is unavailable"
+        ) from error
+    if result.returncode != 0:
+        details = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"OCR failed: {details or 'tesseract exited unsuccessfully'}")
+
+    detected_text = re.sub(
+        r"[^a-z0-9]",
+        "",
+        result.stdout.decode("utf-8", errors="replace").casefold(),
+    )
+    normalized_expected = re.sub(
+        r"[^a-z0-9]",
+        "",
+        expected_text.casefold(),
+    )
+    return normalized_expected in detected_text
 
 
 @asynccontextmanager
@@ -553,6 +625,7 @@ async def capture_desktop(
     frame_queue: queue.Queue[Any],
     stop_event: threading.Event,
     state: dict[str, Any] | None = None,
+    startup_screen_check: StartupScreenCheck | None = None,
 ) -> None:
     def publish(item: Any) -> None:
         try:
@@ -563,12 +636,25 @@ async def capture_desktop(
 
     try:
         publish("Connecting to VNC desktop...")
+        startup_checked = startup_screen_check is None
         while not stop_event.is_set():
             cycle_started = asyncio.get_running_loop().time()
             screenshot = await asyncio.wait_for(
                 capture_full_desktop(config, state),
                 timeout=max(30.0, update_seconds),
             )
+            if not startup_checked:
+                try:
+                    startup_ok, message = startup_screen_check(screenshot)
+                except (OSError, RuntimeError, ValueError) as error:
+                    startup_ok = False
+                    message = f"Desktop application check failed: {error}"
+                print(message, flush=True)
+                if not startup_ok:
+                    publish(RuntimeError(message))
+                    stop_event.set()
+                    break
+                startup_checked = True
             publish(
                 f"Connected to {config.host}; full desktop captured"
             )
@@ -591,6 +677,7 @@ def display_desktop(
     config: DesktopConfig,
     update_seconds: float,
     state: dict[str, Any] | None = None,
+    startup_screen_check: StartupScreenCheck | None = None,
 ) -> None:
     if update_seconds <= 0:
         raise ValueError("update_seconds must be greater than zero")
@@ -605,7 +692,14 @@ def display_desktop(
     stop_event = threading.Event()
     worker = threading.Thread(
         target=lambda: asyncio.run(
-            capture_desktop(config, update_seconds, frame_queue, stop_event, state)
+            capture_desktop(
+                config,
+                update_seconds,
+                frame_queue,
+                stop_event,
+                state,
+                startup_screen_check,
+            )
         ),
         daemon=True,
     )
@@ -665,6 +759,8 @@ def display_desktop(
                     )
                     axis.axis("off")
                     figure.canvas.draw_idle()
+                    if stop_event.is_set():
+                        plt.close(figure)
                 else:
                     last_frame = item
         except queue.Empty:

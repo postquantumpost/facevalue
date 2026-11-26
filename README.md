@@ -6,7 +6,10 @@ Face metics multitool
 Use `--desktop <login.json>` to connect with AsyncVNC and display the remote
 desktop at up to 640 by 480 pixels. The full desktop remains visible with its
 aspect ratio preserved. The initial capture is followed by another capture
-every 10 seconds.
+every 10 seconds. At startup, the application view is verified by OCR; if the
+expected `Cosmetics` heading is not present, the program displays a message
+and exits. The `tesseract` executable must be installed and available on
+`PATH`.
 
 The login file requires `host`. `port` defaults to 5900, while `username` and
 `password` are optional because the required authentication fields depend on
