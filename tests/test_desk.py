@@ -306,7 +306,7 @@ class DesktopTests(unittest.TestCase):
             )
 
         self.assertTrue(result[0])
-        self.assertIn("continuing", result[1].lower())
+        self.assertIn("completed", result[1].lower())
         self.assertIs(result[2], root_screenshot)
         self.assertEqual(
             click_at.await_args_list,
@@ -388,7 +388,11 @@ class DesktopTests(unittest.TestCase):
         facevalue.current_face_value_state.update(
             {
                 "Nose Size": 125,
-                "Jaw Width": 48,
+                "Nose/Forehead Ratio": 110,
+                "Face Protrusion": 147,
+                "Vert. Face Ratio": 143,
+                "Facial Feature Slant": 146,
+                "Horiz. Face Ratio": 182,
             }
         )
         try:
@@ -397,7 +401,7 @@ class DesktopTests(unittest.TestCase):
                     "facevalue.secrets.choice",
                     side_effect=[
                         "Nose Size", 1,
-                        "Jaw Width", -1,
+                        "Horiz. Face Ratio", -1,
                         "Nose Size", -1,
                     ],
                 ) as choice,
@@ -417,6 +421,22 @@ class DesktopTests(unittest.TestCase):
                     "facevalue.desk.press_key",
                     new=AsyncMock(),
                 ) as press_key,
+                patch(
+                    "facevalue.desk.capture_full_desktop",
+                    new=AsyncMock(return_value=screenshot),
+                ),
+                patch(
+                    "facevalue.read_leaf_integer",
+                    side_effect=[
+                        (126, ""),
+                        (181, ""),
+                        (125, ""),
+                    ],
+                ),
+                patch(
+                    "facevalue.asyncio.sleep",
+                    new=AsyncMock(),
+                ),
             ):
                 result = asyncio.run(
                     facevalue.modify_random_face_values(client, screenshot)
@@ -425,7 +445,14 @@ class DesktopTests(unittest.TestCase):
             self.assertTrue(result[0])
             self.assertEqual(
                 facevalue.current_face_value_state,
-                {"Nose Size": 125, "Jaw Width": 47},
+                {
+                    "Nose Size": 125,
+                    "Nose/Forehead Ratio": 110,
+                    "Face Protrusion": 147,
+                    "Vert. Face Ratio": 143,
+                    "Facial Feature Slant": 146,
+                    "Horiz. Face Ratio": 181,
+                },
             )
             self.assertEqual(choice.call_count, 6)
             self.assertEqual(select_menu.await_count, 6)

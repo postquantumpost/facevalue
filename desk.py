@@ -751,6 +751,35 @@ async def capture_desktop(
             state["desktop_client"] = None
 
 
+async def run_desktop_sequence(
+    config: DesktopConfig,
+    state: dict[str, Any] | None = None,
+    startup_screen_check: StartupScreenCheck | None = None,
+    startup_control_check: StartupControlCheck | None = None,
+) -> np.ndarray:
+    try:
+        async with open_desktop(config) as client:
+            if state is not None:
+                state["desktop_client"] = client
+            screenshot = await capture_full_desktop(client)
+            if startup_screen_check is not None:
+                ok, message = startup_screen_check(screenshot)
+                print(message, flush=True)
+                if not ok:
+                    raise RuntimeError(message)
+            if startup_control_check is not None:
+                ok, message, screenshot = await startup_control_check(
+                    client, screenshot
+                )
+                print(message, flush=True)
+                if not ok:
+                    raise RuntimeError(message)
+            return screenshot
+    finally:
+        if state is not None:
+            state["desktop_client"] = None
+
+
 def display_desktop(
     config: DesktopConfig,
     update_seconds: float,

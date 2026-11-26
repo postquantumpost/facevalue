@@ -19,6 +19,28 @@ class FaceValueTests(unittest.TestCase):
         self.assertTrue(application.parse_arguments(["--window", "true"]).window)
         self.assertFalse(application.parse_arguments(["--window", "false"]).window)
 
+    def test_testmode_defaults_true_and_accepts_boolean(self) -> None:
+        self.assertTrue(application.parse_arguments([]).testmode)
+        self.assertFalse(
+            application.parse_arguments(["--testmode", "false"]).testmode
+        )
+
+    def test_desktop_input_and_window_are_compatible(self) -> None:
+        arguments = application.parse_arguments(
+            [
+                "--desktop",
+                "desktop.json",
+                "--input",
+                "faces.json",
+                "--window",
+                "true",
+            ]
+        )
+
+        self.assertEqual(arguments.desktop, Path("desktop.json"))
+        self.assertEqual(arguments.input, Path("faces.json"))
+        self.assertTrue(arguments.window)
+
     def test_input_argument_rejects_non_json_file(self) -> None:
         with self.assertRaises(SystemExit):
             application.parse_arguments(["--input", "data.txt"])
@@ -61,6 +83,40 @@ class FaceValueTests(unittest.TestCase):
 
             supported_images.assert_not_called()
             show_window.assert_called_once_with(data)
+
+    def test_display_only_image_does_not_change_consensus_sources(self) -> None:
+        data = {
+            "images": [],
+            "deepface": {"embeddings": []},
+            "mediapipe": {"geometry": []},
+            "consensus": {
+                "status": "ok",
+                "source_image_ids": ["image-1"],
+            },
+        }
+        geometry = {
+            "image": {"path": "desktop.png", "width_px": 1, "height_px": 1}
+        }
+        embedding = {"embedding": [1.0]}
+
+        with (
+            patch.object(
+                facevalue,
+                "extract_mediapipe_geometry",
+                return_value=geometry,
+            ),
+            patch.object(
+                facevalue,
+                "extract_deepface_embedding",
+                return_value=embedding,
+            ),
+        ):
+            facevalue.add_display_only_image(data, Path("desktop.png"))
+
+        self.assertEqual(data["images"][-1]["id"], "desktop-face")
+        self.assertEqual(data["mediapipe"]["geometry"][-1], geometry)
+        self.assertEqual(data["deepface"]["embeddings"][-1], embedding)
+        self.assertEqual(data["consensus"]["source_image_ids"], ["image-1"])
 
     def test_supported_images_uses_every_supported_file_in_name_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

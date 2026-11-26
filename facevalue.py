@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import re
 import secrets
+import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -12,6 +13,7 @@ import face
 
 
 update_seconds: float = 10.0
+testmode: bool = True
 state: dict[str, Any] = {
     "desktop_client": None,
     "desktop_config": None,
@@ -349,7 +351,12 @@ async def read_all_face_structure_values(
         return False, message, structure_screenshot
 
     values: dict[str, int] = {}
-    for submenu_name, submenu in alter_face_structure.items():
+    submenus = (
+        {"Facial Balance": alter_facial_balance}
+        if testmode
+        else alter_face_structure
+    )
+    for submenu_name, submenu in submenus.items():
         if not isinstance(submenu, dict):
             return (
                 False,
@@ -418,7 +425,12 @@ async def read_all_face_structure_values(
 
 def face_structure_leaf_paths() -> dict[str, tuple[str, dict[str, Any]]]:
     paths: dict[str, tuple[str, dict[str, Any]]] = {}
-    for submenu_name, submenu in alter_face_structure.items():
+    submenus = (
+        {"Facial Balance": alter_facial_balance}
+        if testmode
+        else alter_face_structure
+    )
+    for submenu_name, submenu in submenus.items():
         if not isinstance(submenu, dict):
             continue
         for item_name, child in submenu.items():
@@ -435,7 +447,13 @@ async def modify_random_face_values(
     if not current_face_value_state:
         return False, "No face values are available to modify; exiting.", root_screenshot
     leaf_paths = face_structure_leaf_paths()
-    item_names = tuple(current_face_value_state)
+    item_names = tuple(alter_facial_balance)
+    if not set(item_names).issubset(current_face_value_state):
+        return (
+            False,
+            "Facial Balance values have not all been read; exiting.",
+            root_screenshot,
+        )
     current_screenshot = root_screenshot
 
     for iteration in range(modification_count):
@@ -475,10 +493,19 @@ async def modify_random_face_values(
         await desk.press_key(client, "Right" if delta > 0 else "Left")
         await desk.press_key(client, "Return")
         await asyncio.sleep(1.0)
-        current_face_value_state[item_name] += delta
+        modified_screenshot = await desk.capture_full_desktop(client)
+        new_value, error_message = read_leaf_integer(
+            modified_screenshot,
+            submenu,
+            item_name,
+        )
+        if new_value is None:
+            return False, error_message, modified_screenshot
+        old_value = current_face_value_state[item_name]
+        current_face_value_state[item_name] = new_value
         print(
-            f"Modified {item_name}: {delta:+d} "
-            f"({current_face_value_state[item_name]}) "
+            f"Modified {item_name}: requested {delta:+d}, "
+            f"actual {old_value} -> {new_value} "
             f"[{iteration + 1}/{modification_count}]",
             flush=True,
         )
@@ -625,7 +652,7 @@ async def verify_desktop_controls(
     if not modified:
         return False, message, modified_screenshot
     print(current_face_value_state, flush=True)
-    return True, f"{message} Continuing desktop monitoring.", modified_screenshot
+    return True, message, modified_screenshot
 
 
 
@@ -670,26 +697,77 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="true|false",
         help="display requested face or desktop data (default: false)",
     )
+    parser.add_argument(
+        "--testmode",
+        type=parse_boolean,
+        default=True,
+        metavar="true|false",
+        help="limit desktop operations to Facial Balance (default: true)",
+    )
     arguments = parser.parse_args(argv)
     for option_name in ("input", "output", "desktop"):
         path = getattr(arguments, option_name)
         if path is not None and path.suffix.lower() != ".json":
             parser.error(f"--{option_name} must name a file with a .json extension")
 
-    exclusive_sources = [
-        name
-        for name in ("input", "fdir", "desktop")
-        if getattr(arguments, name) is not None
-    ]
-    if len(exclusive_sources) > 1:
-        parser.error("--input, --fdir, and --desktop are mutually exclusive")
+    if arguments.input is not None and arguments.fdir is not None:
+        parser.error("--input and --fdir are mutually exclusive")
+    if arguments.desktop is not None and arguments.fdir is not None:
+        parser.error("--desktop and --fdir cannot be used together")
+    if (
+        arguments.desktop is not None
+        and arguments.input is not None
+        and not arguments.window
+    ):
+        parser.error("--desktop with --input requires --window true")
     return arguments
 
 
 def run(arguments: argparse.Namespace) -> None:
+    global testmode
+    testmode = getattr(arguments, "testmode", True)
     if arguments.desktop is not None:
         config = desk.read_config(arguments.desktop)
         state["desktop_config"] = config
+        if arguments.testmode and arguments.input is None:
+            try:
+                asyncio.run(
+                    desk.run_desktop_sequence(
+                        config,
+                        state=state,
+                        startup_screen_check=verify_desktop_display,
+                        startup_control_check=verify_desktop_controls,
+                    )
+                )
+            except RuntimeError as error:
+                print(error, flush=True)
+            return
+        if arguments.input is not None:
+            try:
+                screenshot = asyncio.run(
+                    desk.run_desktop_sequence(
+                        config,
+                        state=state,
+                        startup_screen_check=verify_desktop_display,
+                        startup_control_check=verify_desktop_controls,
+                    )
+                )
+            except RuntimeError as error:
+                print(error, flush=True)
+                return
+            data = face.read_input(arguments.input)
+            from PIL import Image
+
+            _, width_px = screenshot.shape[:2]
+            desktop_face = screenshot[:, round(width_px * 0.52) :, :3]
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                desktop_face_path = Path(temporary_directory) / "desktop-face.png"
+                Image.fromarray(desktop_face).save(desktop_face_path)
+                face.add_display_only_image(data, desktop_face_path)
+                if arguments.output is not None:
+                    face.write_output(arguments.output, data)
+                face.show_window(data)
+            return
         desk.display_desktop(
             config,
             update_seconds,

@@ -15,6 +15,17 @@ by pressing and releasing Backspace and verifying the start menu. If any
 verification fails, the program displays a message and exits. The `tesseract`
 executable must be installed and available on `PATH`.
 
+`--testmode true` (the default) scans and randomly modifies only the Facial
+Balance submenu. With `--testmode false`, every Face Structure submenu is
+scanned. Random modifications always OCR the resulting integer so unchanged
+values at a range limit are recorded correctly.
+
+Use `--desktop <login.json> --input <faces.json> --window true` to capture the
+right-hand desktop face as an additional display-only column. It is analyzed
+like the input images but excluded from consensus calculations. A desktop run
+without `--input` exits after the three random modifications while test mode is
+enabled.
+
 The login file requires `host`. `port` defaults to 5900, while `username` and
 `password` are optional because the required authentication fields depend on
 the VNC server:

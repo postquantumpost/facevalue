@@ -753,3 +753,35 @@ def run(
         write_output(output_path, data)
     if window:
         show_window(data)
+
+
+def add_display_only_image(
+    data: dict[str, Any],
+    image_path: Path,
+    image_id: str = "desktop-face",
+) -> None:
+    result: dict[str, Any] = {
+        "id": image_id,
+        "path": str(image_path),
+        "status": "ok",
+    }
+    try:
+        result["mediapipe"] = extract_mediapipe_geometry(image_path)
+        result["deepface"] = extract_deepface_embedding(image_path)
+    except FaceDetectionError as error:
+        result["status"] = "failed"
+        result["error"] = str(error)
+
+    data["images"].append(
+        {
+            "id": result["id"],
+            "path": result["path"],
+            "status": result["status"],
+            **({"error": result["error"]} if result["status"] == "failed" else {}),
+        }
+    )
+    if result["status"] == "ok":
+        result["mediapipe"]["image_id"] = image_id
+        result["deepface"]["image_id"] = image_id
+        data["mediapipe"]["geometry"].append(result["mediapipe"])
+        data["deepface"]["embeddings"].append(result["deepface"])
