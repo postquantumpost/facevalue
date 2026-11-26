@@ -168,6 +168,13 @@ async def click_at(client: Any, x: int, y: int) -> None:
     await client.drain()
 
 
+async def press_key(client: Any, key: str) -> None:
+    with client.keyboard.hold(key):
+        await client.drain()
+        await asyncio.sleep(0.05)
+    await client.drain()
+
+
 @asynccontextmanager
 async def open_desktop(config: DesktopConfig):
     try:

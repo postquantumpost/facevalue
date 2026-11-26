@@ -188,7 +188,7 @@ def verify_desktop_display(screenshot: Any) -> tuple[bool, str]:
     return False, "Alter Face & Hair is not displayed; exiting."
 
 
-async def verify_mouse_control(
+async def verify_desktop_controls(
     client: Any,
     screenshot: Any,
 ) -> tuple[bool, str, Any]:
@@ -229,17 +229,45 @@ async def verify_mouse_control(
         nominal_screen_height,
         "Alter Face & Hair > Adjust Face Template",
     )
-    if found:
+    if not found:
+        return (
+            False,
+            "Unable to click Adjust Face Template; exiting.",
+            updated_screenshot,
+        )
+    print(
+        "Verified mouse control by selecting Adjust Face Template.",
+        flush=True,
+    )
+
+    await desk.press_key(client, "BackSpace")
+    await asyncio.sleep(1.0)
+    restored_screenshot = await desk.capture_full_desktop(client)
+    root_heading_present = desk.region_contains_text(
+        restored_screenshot,
+        nominal_alter_face_and_hair,
+        nominal_screen_width,
+        nominal_screen_height,
+        "Alter Face & Hair",
+    )
+    submenu_heading_present = desk.region_contains_text(
+        restored_screenshot,
+        nominal_alter_face_and_hair,
+        nominal_screen_width,
+        nominal_screen_height,
+        "Adjust Face Template",
+    )
+    if root_heading_present and not submenu_heading_present:
         return (
             True,
-            "Verified mouse control by selecting Adjust Face Template; "
+            "Verified keyboard control with Backspace; "
             "continuing desktop monitoring.",
-            updated_screenshot,
+            restored_screenshot,
         )
     return (
         False,
-        "Unable to click Adjust Face Template; exiting.",
-        updated_screenshot,
+        "Backspace did not return to the start menu; exiting.",
+        restored_screenshot,
     )
 
 
@@ -310,7 +338,7 @@ def run(arguments: argparse.Namespace) -> None:
             update_seconds,
             state=state,
             startup_screen_check=verify_desktop_display,
-            startup_control_check=verify_mouse_control,
+            startup_control_check=verify_desktop_controls,
         )
         return
     face.run(

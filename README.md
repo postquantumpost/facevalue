@@ -10,9 +10,10 @@ every 10 seconds. At startup, the application view is verified by OCR: the
 expected `Cosmetics` heading is checked first, followed by `Alter Face & Hair`.
 Mouse control is then checked over the same VNC connection by selecting
 `Adjust Face Template` and verifying the resulting
-`Alter Face & Hair > Adjust Face Template` heading. If any verification fails,
-the program displays a message and exits. The `tesseract` executable must be
-installed and available on `PATH`.
+`Alter Face & Hair > Adjust Face Template` heading. Keyboard control is checked
+by pressing and releasing Backspace and verifying the start menu. If any
+verification fails, the program displays a message and exits. The `tesseract`
+executable must be installed and available on `PATH`.
 
 The login file requires `host`. `port` defaults to 5900, while `username` and
 `password` are optional because the required authentication fields depend on

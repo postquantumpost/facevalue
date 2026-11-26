@@ -186,7 +186,7 @@ class DesktopTests(unittest.TestCase):
         with (
             patch(
                 "facevalue.desk.region_contains_text",
-                side_effect=[True, True],
+                side_effect=[True, True, False],
             ) as contains_text,
             patch("builtins.print") as print_message,
         ):
@@ -225,9 +225,10 @@ class DesktopTests(unittest.TestCase):
         contains_text.assert_called_once()
         print_message.assert_not_called()
 
-    def test_mouse_control_clicks_adjust_face_template_and_rechecks(self) -> None:
+    def test_controls_click_then_backspace_and_recheck(self) -> None:
         screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
         updated_screenshot = np.ones((2160, 3840, 4), dtype=np.uint8)
+        restored_screenshot = np.full((2160, 3840, 4), 2, dtype=np.uint8)
         client = object()
 
         with (
@@ -237,29 +238,45 @@ class DesktopTests(unittest.TestCase):
             ) as click_at,
             patch(
                 "facevalue.desk.capture_full_desktop",
-                new=AsyncMock(return_value=updated_screenshot),
-            ),
+                new=AsyncMock(
+                    side_effect=[updated_screenshot, restored_screenshot]
+                ),
+            ) as capture_full,
+            patch(
+                "facevalue.desk.press_key",
+                new=AsyncMock(),
+            ) as press_key,
             patch(
                 "facevalue.desk.region_contains_text",
-                return_value=True,
+                side_effect=[True, True, False],
             ) as contains_text,
             patch("facevalue.asyncio.sleep", new=AsyncMock()) as sleep,
         ):
             result = asyncio.run(
-                facevalue.verify_mouse_control(client, screenshot)
+                facevalue.verify_desktop_controls(client, screenshot)
             )
 
         self.assertTrue(result[0])
         self.assertIn("continuing", result[1])
-        self.assertIs(result[2], updated_screenshot)
+        self.assertIs(result[2], restored_screenshot)
         click_at.assert_awaited_once_with(client, 310, 189)
-        sleep.assert_awaited_once_with(1.0)
+        press_key.assert_awaited_once_with(client, "BackSpace")
+        self.assertEqual(sleep.await_count, 2)
+        self.assertEqual(capture_full.await_count, 2)
         self.assertEqual(
-            contains_text.call_args.args[4],
+            contains_text.call_args_list[0].args[4],
             "Alter Face & Hair > Adjust Face Template",
         )
+        self.assertEqual(
+            contains_text.call_args_list[1].args[4],
+            "Alter Face & Hair",
+        )
+        self.assertEqual(
+            contains_text.call_args_list[2].args[4],
+            "Adjust Face Template",
+        )
 
-    def test_mouse_control_reports_click_failure(self) -> None:
+    def test_controls_report_click_failure_without_backspace(self) -> None:
         screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
         client = object()
 
@@ -271,13 +288,42 @@ class DesktopTests(unittest.TestCase):
             ),
             patch("facevalue.desk.region_contains_text", return_value=False),
             patch("facevalue.asyncio.sleep", new=AsyncMock()),
+            patch(
+                "facevalue.desk.press_key",
+                new=AsyncMock(),
+            ) as press_key,
         ):
             result = asyncio.run(
-                facevalue.verify_mouse_control(client, screenshot)
+                facevalue.verify_desktop_controls(client, screenshot)
             )
 
         self.assertFalse(result[0])
         self.assertIn("Unable to click", result[1])
+        press_key.assert_not_awaited()
+
+    def test_controls_report_backspace_failure(self) -> None:
+        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+        client = object()
+
+        with (
+            patch("facevalue.desk.click_at", new=AsyncMock()),
+            patch(
+                "facevalue.desk.capture_full_desktop",
+                new=AsyncMock(return_value=screenshot),
+            ),
+            patch(
+                "facevalue.desk.region_contains_text",
+                side_effect=[True, True, True],
+            ),
+            patch("facevalue.desk.press_key", new=AsyncMock()),
+            patch("facevalue.asyncio.sleep", new=AsyncMock()),
+        ):
+            result = asyncio.run(
+                facevalue.verify_desktop_controls(client, screenshot)
+            )
+
+        self.assertFalse(result[0])
+        self.assertIn("Backspace did not return", result[1])
 
 
 if __name__ == "__main__":
