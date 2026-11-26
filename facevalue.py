@@ -47,6 +47,11 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Extract and visualize face geometry from an image directory."
     )
     parser.add_argument(
+        "--input",
+        type=Path,
+        help="JSON file previously created by --output",
+    )
+    parser.add_argument(
         "--fdir",
         type=Path,
         help="directory containing images with a face",
@@ -64,8 +69,12 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="display a grid of extracted face information (default: false)",
     )
     arguments = parser.parse_args(argv)
-    if arguments.output is not None and arguments.output.suffix.lower() != ".json":
-        parser.error("--output must name a file with a .json extension")
+    for option_name in ("input", "output"):
+        path = getattr(arguments, option_name)
+        if path is not None and path.suffix.lower() != ".json":
+            parser.error(f"--{option_name} must name a file with a .json extension")
+    if arguments.input is not None and arguments.fdir is not None:
+        parser.error("--input and --fdir cannot be used together")
     return arguments
 
 
@@ -445,6 +454,29 @@ def write_output(output_path: Path, data: dict[str, Any]) -> None:
         output_file.write("\n")
 
 
+def read_input(input_path: Path) -> dict[str, Any]:
+    if not input_path.is_file():
+        raise FileNotFoundError(f"input JSON file not found: {input_path}")
+    try:
+        with input_path.open("r", encoding="utf-8") as input_file:
+            data = json.load(input_file)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"input file is not valid JSON: {input_path}") from error
+
+    if not isinstance(data, dict):
+        raise ValueError("input JSON root must be an object")
+    required_sections = ("images", "deepface", "mediapipe", "consensus")
+    missing_sections = [
+        section for section in required_sections if section not in data
+    ]
+    if missing_sections:
+        raise ValueError(
+            "input JSON is missing required sections: "
+            + ", ".join(missing_sections)
+        )
+    return data
+
+
 def show_window(data: dict[str, Any]) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -511,8 +543,11 @@ def show_window(data: dict[str, Any]) -> None:
         geometry = geometry_by_id[image_record["id"]]
         deepface_record = deepface_by_id[image_record["id"]]
         image_info = geometry["image"]
-        with Image.open(image_info["path"]) as source_image:
-            image_rgb = np.asarray(source_image.convert("RGB"))
+        image_path = Path(image_info["path"])
+        image_available = image_path.is_file()
+        if image_available:
+            with Image.open(image_path) as source_image:
+                image_rgb = np.asarray(source_image.convert("RGB"))
 
         landmarks = geometry["landmarks"]
         x_pixels = (
@@ -529,14 +564,33 @@ def show_window(data: dict[str, Any]) -> None:
 
         rotating_axes.append(rotating_axis)
 
-        image_axis.imshow(image_rgb)
         image_axis.set_title(
             f"{image_record['id']}: {Path(image_record['path']).name}"
         )
+        if image_available:
+            image_axis.imshow(image_rgb)
+        else:
+            image_axis.text(
+                0.5,
+                0.5,
+                "Source image unavailable",
+                ha="center",
+                va="center",
+            )
         image_axis.axis("off")
 
-        geometry_axis.imshow(image_rgb)
-        geometry_axis.scatter(x_pixels, y_pixels, c="red", s=3)
+        if image_available:
+            geometry_axis.imshow(image_rgb)
+            geometry_axis.scatter(x_pixels, y_pixels, c="red", s=3)
+        else:
+            geometry_axis.scatter(
+                np.asarray([point["x"] for point in landmarks]),
+                np.asarray([point["y"] for point in landmarks]),
+                c="red",
+                s=3,
+            )
+            geometry_axis.invert_yaxis()
+            geometry_axis.set_aspect("equal")
         geometry_axis.set_title("MediaPipe 2D geometry")
         geometry_axis.axis("off")
 
@@ -710,6 +764,15 @@ def show_window(data: dict[str, Any]) -> None:
 
 
 def run(arguments: argparse.Namespace) -> None:
+    input_path = getattr(arguments, "input", None)
+    if input_path is not None:
+        data = read_input(input_path)
+        if arguments.output is not None:
+            write_output(arguments.output, data)
+        if arguments.window:
+            show_window(data)
+        return
+
     if arguments.fdir is None:
         return
 

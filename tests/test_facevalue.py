@@ -18,6 +18,44 @@ class FaceValueTests(unittest.TestCase):
         self.assertTrue(facevalue.parse_arguments(["--window", "true"]).window)
         self.assertFalse(facevalue.parse_arguments(["--window", "false"]).window)
 
+    def test_input_argument_rejects_non_json_file(self) -> None:
+        with self.assertRaises(SystemExit):
+            facevalue.parse_arguments(["--input", "data.txt"])
+
+    def test_input_and_fdir_are_mutually_exclusive(self) -> None:
+        with self.assertRaises(SystemExit):
+            facevalue.parse_arguments(
+                ["--input", "data.json", "--fdir", "images"]
+            )
+
+    def test_run_loads_input_without_extracting_faces(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            input_path = Path(temporary_directory) / "input.json"
+            data = {
+                "images": [],
+                "deepface": {"embeddings": []},
+                "mediapipe": {"geometry": []},
+                "consensus": {
+                    "id": "consensus",
+                    "status": "unavailable",
+                    "source_image_ids": [],
+                    "message": "No faces were recognized; consensus was not generated.",
+                },
+            }
+            input_path.write_text(json.dumps(data), encoding="utf-8")
+            arguments = argparse.Namespace(
+                input=input_path, fdir=None, output=None, window=True
+            )
+
+            with (
+                patch.object(facevalue, "show_window") as show_window,
+                patch.object(facevalue, "supported_images") as supported_images,
+            ):
+                facevalue.run(arguments)
+
+            supported_images.assert_not_called()
+            show_window.assert_called_once_with(data)
+
     def test_supported_images_uses_every_supported_file_in_name_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
