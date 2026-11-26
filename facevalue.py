@@ -168,6 +168,7 @@ def show_window(data: dict[str, Any]) -> None:
     try:
         import matplotlib.pyplot as plt
         import numpy as np
+        from matplotlib.animation import FuncAnimation
     except ImportError as error:
         raise RuntimeError(
             "visualization dependencies are missing; install requirements.txt"
@@ -186,28 +187,62 @@ def show_window(data: dict[str, Any]) -> None:
     x_pixels = np.asarray([point["x"] for point in landmarks]) * image_info["width_px"]
     y_pixels = np.asarray([point["y"] for point in landmarks]) * image_info["height_px"]
     embedding = np.asarray(geometry["embedding"])
+    x_points = np.asarray([point["x"] for point in landmarks])
+    depth_points = np.asarray([point["z"] for point in landmarks])
+    vertical_points = np.asarray([-point["y"] for point in landmarks])
 
-    figure, axes = plt.subplots(1, 3, figsize=(15, 5))
+    figure = plt.figure(figsize=(14, 10))
     figure.canvas.manager.set_window_title("FaceValue")
+    image_axis = figure.add_subplot(2, 2, 1)
+    geometry_axis = figure.add_subplot(2, 2, 2)
+    embedding_axis = figure.add_subplot(2, 2, 3)
+    rotating_axis = figure.add_subplot(2, 2, 4, projection="3d")
 
-    axes[0].imshow(image_rgb)
-    axes[0].set_title("Source image")
-    axes[0].axis("off")
+    image_axis.imshow(image_rgb)
+    image_axis.set_title("Source image")
+    image_axis.axis("off")
 
-    axes[1].imshow(image_rgb)
-    axes[1].scatter(x_pixels, y_pixels, c="red", s=3)
-    axes[1].set_title("MediaPipe geometry")
-    axes[1].axis("off")
+    geometry_axis.imshow(image_rgb)
+    geometry_axis.scatter(x_pixels, y_pixels, c="red", s=3)
+    geometry_axis.set_title("MediaPipe geometry")
+    geometry_axis.axis("off")
 
     normalized = embedding.reshape(1, -1)
-    axes[2].imshow(normalized, cmap="viridis", aspect="auto")
-    axes[2].set_yticks([])
-    axes[2].set_xlabel("MediaPipe normalized coordinates")
+    embedding_axis.imshow(normalized, cmap="viridis", aspect="auto")
+    embedding_axis.set_yticks([])
+    embedding_axis.set_xlabel("MediaPipe normalized coordinates")
     if data["deepface"]["embeddings"]:
-        axes[2].set_title("DeepFace / MediaPipe embeddings")
+        embedding_axis.set_title("DeepFace / MediaPipe embeddings")
     else:
-        axes[2].set_title("MediaPipe embedding\n(DeepFace pending)")
+        embedding_axis.set_title("MediaPipe embedding\n(DeepFace pending)")
+
+    rotating_axis.scatter(
+        x_points,
+        depth_points,
+        vertical_points,
+        c=np.asarray(range(len(landmarks))),
+        cmap="viridis",
+        s=3,
+    )
+    rotating_axis.set_title("Rotating 3D face points")
+    rotating_axis.set_box_aspect((1, 1, 1))
+    rotating_axis.set_axis_off()
+
+    def rotate(frame: int) -> tuple[Any, ...]:
+        rotating_axis.view_init(elev=10, azim=frame * 0.5)
+        return ()
+
+    animation = FuncAnimation(
+        figure,
+        rotate,
+        frames=720,
+        interval=50,
+        repeat=True,
+        cache_frame_data=False,
+        blit=False,
+    )
     plt.tight_layout()
+    figure.canvas.draw()
     plt.show()
     plt.close(figure)
 
