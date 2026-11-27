@@ -758,11 +758,10 @@ def run(arguments: argparse.Namespace) -> None:
                 face_figure = face.show_window(data, block=False)
                 completed_updates: queue.Queue[Any] = queue.Queue(maxsize=1)
                 analysis_running = threading.Event()
+                startup_capture_pending = True
 
                 def update_face_feedback(screenshot: Any) -> None:
-                    nonlocal face_figure
-                    import matplotlib.pyplot as plt
-
+                    nonlocal startup_capture_pending
                     try:
                         updated_data = completed_updates.get_nowait()
                     except queue.Empty:
@@ -772,11 +771,11 @@ def run(arguments: argparse.Namespace) -> None:
                         data.update(updated_data)
                         if arguments.output is not None:
                             face.write_output(arguments.output, data)
-                        plt.close(face_figure)
-                        face_figure = face.show_window(data, block=False)
+                        face.update_figure(face_figure, data)
 
-                    if analysis_running.is_set():
+                    if analysis_running.is_set() or not startup_capture_pending:
                         return
+                    startup_capture_pending = False
                     _, width_px = screenshot.shape[:2]
                     desktop_face = screenshot[
                         :, round(width_px * 0.52) :, :3
@@ -812,9 +811,7 @@ def run(arguments: argparse.Namespace) -> None:
                         on_screenshot=update_face_feedback,
                     )
                 finally:
-                    import matplotlib.pyplot as plt
-
-                    plt.close(face_figure)
+                    face_figure._facevalue_tk_window.destroy()
             return
         if arguments.window and arguments.testmode:
             desk.display_desktop(

@@ -803,7 +803,9 @@ def display_desktop(
     if update_seconds <= 0:
         raise ValueError("update_seconds must be greater than zero")
     try:
-        import matplotlib.pyplot as plt
+        import tkinter as tk
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.figure import Figure
     except ImportError as error:
         raise RuntimeError(
             "desktop dependencies are missing; install requirements.txt"
@@ -828,14 +830,28 @@ def display_desktop(
     )
     worker.start()
 
-    figure, axis = plt.subplots(
+    parent = tk._default_root
+    window = (
+        tk.Toplevel(parent)
+        if parent is not None
+        else tk.Tk()
+    )
+    window.title(f"FaceValue Desktop: {config.host}")
+    window.geometry(
+        f"{DESKTOP_WINDOW_WIDTH_PX}x{DESKTOP_WINDOW_HEIGHT_PX}"
+    )
+    window.resizable(False, False)
+    figure = Figure(
         figsize=(
             DESKTOP_WINDOW_WIDTH_PX / 100,
             DESKTOP_WINDOW_HEIGHT_PX / 100,
         ),
         dpi=100,
+        facecolor="black",
     )
-    figure.canvas.manager.set_window_title(f"FaceValue Desktop: {config.host}")
+    canvas = FigureCanvasTkAgg(figure, master=window)
+    axis = figure.add_subplot()
+    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
     axis.set_position((0, 0, 1, 1))
     axis.axis("off")
     axis.text(
@@ -846,7 +862,6 @@ def display_desktop(
         ha="center",
         va="center",
     )
-    figure.patch.set_facecolor("black")
     last_frame = None
     completion_frame_rendered = False
 
@@ -868,7 +883,7 @@ def display_desktop(
                         wrap=True,
                     )
                     axis.axis("off")
-                    figure.canvas.draw_idle()
+                    canvas.draw_idle()
                 elif isinstance(item, Exception):
                     last_frame = None
                     axis.clear()
@@ -882,9 +897,9 @@ def display_desktop(
                         wrap=True,
                     )
                     axis.axis("off")
-                    figure.canvas.draw_idle()
+                    canvas.draw_idle()
                     if stop_event.is_set():
-                        plt.close(figure)
+                        window.destroy()
                 else:
                     last_frame = item
         except queue.Empty:
@@ -893,7 +908,7 @@ def display_desktop(
             axis.clear()
             axis.imshow(last_frame)
             axis.axis("off")
-            figure.canvas.draw_idle()
+            canvas.draw_idle()
             last_frame = None
             if on_screenshot is not None and state is not None:
                 desktop_screenshot = state.get("desktop_screenshot")
@@ -902,19 +917,34 @@ def display_desktop(
             if stop_event.is_set() and not worker.is_alive():
                 completion_frame_rendered = True
         if completion_frame_rendered:
-            plt.close(figure)
-        return True
+            window.destroy()
 
-    timer = figure.canvas.new_timer(interval=50)
-    timer.add_callback(update_window)
-    timer.start()
+    timer_id = ""
+
+    def tick() -> None:
+        nonlocal timer_id
+        try:
+            update_window()
+            timer_id = window.after(50, tick)
+        except tk.TclError:
+            pass
+
+    timer_id = window.after(0, tick)
     try:
-        plt.show()
+        if parent is None:
+            window.mainloop()
+        else:
+            parent.mainloop()
     finally:
         stop_event.set()
-        timer.stop()
+        if timer_id:
+            try:
+                window.after_cancel(timer_id)
+            except tk.TclError:
+                pass
         worker.join(timeout=1.0)
-        plt.close(figure)
+        if window.winfo_exists():
+            window.destroy()
     if state is None:
         return None
     return state.get("desktop_screenshot")

@@ -25,6 +25,43 @@ class FaceValueTests(unittest.TestCase):
             application.parse_arguments(["--testmode", "false"]).testmode
         )
 
+    def test_face_window_is_bounded_to_1024_by_768(self) -> None:
+        data = {
+            "images": [],
+            "deepface": {"embeddings": []},
+            "mediapipe": {"geometry": []},
+            "consensus": {
+                "status": "unavailable",
+                "message": "No faces were recognized; consensus was not generated.",
+            },
+        }
+        with patch("matplotlib.pyplot.show"):
+            figure = facevalue.show_window(data, block=False)
+        width_px, height_px = figure.get_size_inches() * figure.dpi
+
+        self.assertLessEqual(width_px, 1024)
+        self.assertLessEqual(height_px, 768)
+        import matplotlib.pyplot as plt
+
+        plt.close(figure)
+
+    def test_axis_text_is_reduced_until_it_fits(self) -> None:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+
+        figure = Figure(figsize=(2, 2), dpi=100)
+        canvas = FigureCanvasAgg(figure)
+        axis = figure.add_subplot()
+        title = axis.set_title("A title that is deliberately much too long", fontsize=24)
+
+        facevalue.fit_axis_text(figure)
+
+        renderer = canvas.get_renderer()
+        title_width = title.get_window_extent(renderer=renderer).width
+        axis_width = axis.get_window_extent(renderer=renderer).width
+        self.assertLessEqual(title_width, axis_width * 0.95)
+        self.assertLess(title.get_fontsize(), 24)
+
     def test_desktop_input_and_window_are_compatible(self) -> None:
         arguments = application.parse_arguments(
             [

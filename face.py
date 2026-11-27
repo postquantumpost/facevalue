@@ -431,12 +431,88 @@ def read_input(input_path: Path) -> dict[str, Any]:
     return data
 
 
-def show_window(
-    data: dict[str, Any],
-    block: bool = True,
-) -> Any:
+def fit_axis_text(figure: Any, minimum_font_size: float = 4.0) -> None:
+    figure.canvas.draw()
+    renderer = figure.canvas.get_renderer()
+
+    def fit_text_artist(
+        text_artist: Any,
+        maximum_width: float,
+        maximum_height: float,
+    ) -> None:
+        if not text_artist.get_text():
+            return
+        for _ in range(20):
+            bounds = text_artist.get_window_extent(renderer=renderer)
+            width_scale = maximum_width / max(bounds.width, 1.0)
+            height_scale = maximum_height / max(bounds.height, 1.0)
+            scale = min(width_scale, height_scale, 1.0)
+            if scale >= 0.99:
+                break
+            next_size = max(
+                minimum_font_size,
+                text_artist.get_fontsize() * scale * 0.95,
+            )
+            if abs(next_size - text_artist.get_fontsize()) < 0.05:
+                break
+            text_artist.set_fontsize(next_size)
+
+    for axis in figure.axes:
+        axis_bounds = axis.get_window_extent(renderer=renderer)
+        if axis_bounds.width <= 0 or axis_bounds.height <= 0:
+            continue
+        fit_text_artist(
+            axis.title,
+            axis_bounds.width * 0.94,
+            axis_bounds.height * 0.20,
+        )
+        fit_text_artist(
+            axis.xaxis.label,
+            axis_bounds.width * 0.90,
+            axis_bounds.height * 0.12,
+        )
+        fit_text_artist(
+            axis.yaxis.label,
+            axis_bounds.height * 0.35,
+            axis_bounds.width * 0.12,
+        )
+        for text_artist in axis.texts:
+            fit_text_artist(
+                text_artist,
+                axis_bounds.width * 0.92,
+                axis_bounds.height * 0.80,
+            )
+
+        for tick_label in axis.get_xticklabels():
+            tick_label.set_fontsize(
+                min(tick_label.get_fontsize(), 6.0)
+            )
+        for tick_label in axis.get_yticklabels():
+            tick_label.set_fontsize(
+                min(tick_label.get_fontsize(), 6.0)
+            )
+
+        legend = axis.get_legend()
+        if legend is not None:
+            for text_artist in legend.get_texts():
+                fit_text_artist(
+                    text_artist,
+                    axis_bounds.width * 0.35,
+                    axis_bounds.height * 0.10,
+                )
+            legend_font_sizes = [
+                text_artist.get_fontsize()
+                for text_artist in legend.get_texts()
+            ]
+            if legend_font_sizes:
+                legend_size = min(legend_font_sizes, default=6.0)
+                for text_artist in legend.get_texts():
+                    text_artist.set_fontsize(legend_size)
+    figure.canvas.draw_idle()
+
+
+def update_figure(figure: Any, data: dict[str, Any]) -> Any:
     try:
-        import matplotlib.pyplot as plt
         import numpy as np
         from matplotlib.animation import FuncAnimation
     except ImportError as error:
@@ -446,9 +522,10 @@ def show_window(
 
     from PIL import Image
 
+    if hasattr(figure, "_facevalue_animation"):
+        figure._facevalue_animation.event_source.stop()
+    figure.clear()
     column_count = len(data["images"]) + 1
-    figure = plt.figure(figsize=(7 * column_count, 20))
-    figure.canvas.manager.set_window_title("FaceValue")
     rotating_axes = []
     geometry_by_id = {
         record["image_id"]: record for record in data["mediapipe"]["geometry"]
@@ -632,12 +709,12 @@ def show_window(
             consensus_forward_axis,
         ):
             axis.axis("off")
-        plt.tight_layout()
-        figure.canvas.draw()
-        plt.show(block=block)
-        if block:
-            plt.close(figure)
-        return figure
+        figure.subplots_adjust(
+            left=0.04, right=0.99, bottom=0.04, top=0.95,
+            wspace=0.3, hspace=0.45,
+        )
+        fit_axis_text(figure)
+        return None
 
     consensus_geometry = consensus["mediapipe"]["geometry"]
     consensus_landmarks = consensus_geometry["landmarks"]
@@ -703,23 +780,58 @@ def show_window(
 
     def rotate(frame: int) -> tuple[Any, ...]:
         for rotating_axis in rotating_axes:
-            rotating_axis.view_init(elev=10, azim=frame * 0.5)
+            rotating_axis.view_init(
+                elev=10,
+                azim=(frame * 4.0) % 360.0,
+            )
         return ()
 
     animation = FuncAnimation(
         figure,
         rotate,
-        frames=720,
-        interval=50,
+        frames=90,
+        interval=20,
         repeat=True,
         cache_frame_data=False,
         blit=False,
     )
-    plt.tight_layout()
-    figure.canvas.draw()
-    plt.show(block=block)
+    figure._facevalue_animation = animation
+    figure.subplots_adjust(
+        left=0.04, right=0.99, bottom=0.04, top=0.95,
+        wspace=0.3, hspace=0.45,
+    )
+    fit_axis_text(figure)
+    animation.event_source.start()
+    return animation
+
+
+def show_window(
+    data: dict[str, Any],
+    block: bool = True,
+) -> Any:
+    try:
+        import tkinter as tk
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.figure import Figure
+    except ImportError as error:
+        raise RuntimeError(
+            "visualization dependencies are missing; install requirements.txt"
+        ) from error
+
+    window = tk.Tk()
+    window.title("FaceValue")
+    window.geometry("1024x768")
+    window.minsize(1, 1)
+    figure = Figure(figsize=(10.24, 7.68), dpi=100)
+    canvas = FigureCanvasTkAgg(figure, master=window)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    figure._facevalue_tk_window = window
+    figure._facevalue_canvas = canvas
+    update_figure(figure, data)
     if block:
-        plt.close(figure)
+        window.mainloop()
+        window.destroy()
     return figure
 
 
