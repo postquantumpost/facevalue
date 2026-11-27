@@ -3,9 +3,13 @@
 import json
 import os
 import tempfile
+import threading
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
@@ -17,6 +21,7 @@ MODEL_CACHE_DIRECTORY = Path(
     os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
 ) / "facevalue"
 DEEPFACE_MODEL_NAME = "SFace"
+NATIVE_LOG_LOCK = threading.Lock()
 PROCRUSTES_ANCHOR_INDICES = (263, 33, 10, 152, 1, 168)
 PROCRUSTES_TARGET = (
     (1.0, 0.0, 0.0),
@@ -26,6 +31,19 @@ PROCRUSTES_TARGET = (
     (0.0, -0.45, -0.15),
     (0.0, -0.15, 0.5),
 )
+
+
+@contextmanager
+def suppress_native_stderr():
+    with NATIVE_LOG_LOCK:
+        saved_stderr = os.dup(2)
+        try:
+            with open(os.devnull, "w") as devnull:
+                os.dup2(devnull.fileno(), 2)
+                yield
+        finally:
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stderr)
 
 
 class FaceDetectionError(ValueError):
@@ -164,10 +182,11 @@ def extract_mediapipe_geometry(image_path: Path) -> dict[str, Any]:
         num_faces=1,
         output_facial_transformation_matrixes=True,
     )
-    with FaceLandmarker.create_from_options(options) as landmarker:
-        result = landmarker.detect(
-            mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-        )
+    with suppress_native_stderr():
+        with FaceLandmarker.create_from_options(options) as landmarker:
+            result = landmarker.detect(
+                mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+            )
 
     if not result.face_landmarks:
         raise FaceDetectionError(f"no face was detected in: {image_path}")
@@ -211,13 +230,14 @@ def extract_deepface_embedding(image_path: Path) -> dict[str, Any]:
         ) from error
 
     try:
-        results = DeepFace.represent(
-            img_path=str(image_path),
-            model_name=DEEPFACE_MODEL_NAME,
-            detector_backend="opencv",
-            enforce_detection=True,
-            max_faces=1,
-        )
+        with suppress_native_stderr():
+            results = DeepFace.represent(
+                img_path=str(image_path),
+                model_name=DEEPFACE_MODEL_NAME,
+                detector_backend="opencv",
+                enforce_detection=True,
+                max_faces=1,
+            )
     except ValueError as error:
         raise FaceDetectionError(str(error)) from error
     if not results:
