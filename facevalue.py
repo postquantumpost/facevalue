@@ -4,8 +4,8 @@ import argparse
 import asyncio
 import copy
 import queue
+import random
 import re
-import secrets
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
@@ -22,6 +22,7 @@ state: dict[str, Any] = {
 }
 current_face_value_state: dict[str, int] = {}
 desktop_consensus_match: float | None = None
+system_random = random.SystemRandom()
 
 # UI location info
 # Nominal screen size
@@ -251,6 +252,69 @@ def menu_item_center(
     )
 
 
+def focused_menu_index(screenshot: Any, menu_size: int) -> int:
+    import numpy as np
+
+    if menu_size <= 0:
+        raise ValueError("menu must contain at least one item")
+    height_px, width_px = screenshot.shape[:2]
+    brightness_by_row: list[float] = []
+    left = round(
+        (nominal_menu_anchor[0] + nominal_slider_start)
+        * width_px
+        / nominal_screen_width
+    )
+    right = round(
+        (nominal_menu_anchor[0] + nominal_number_start)
+        * width_px
+        / nominal_screen_width
+    )
+    for index in range(menu_size):
+        top = (
+            nominal_menu_anchor[1]
+            + nominal_item_height * index
+        )
+        bottom = top + nominal_item_height
+        y1 = round((top + nominal_item_height * 0.25) * height_px / nominal_screen_height)
+        y2 = round((bottom - nominal_item_height * 0.25) * height_px / nominal_screen_height)
+        row = np.asarray(screenshot)[y1:y2, left:right, :3]
+        if row.size == 0:
+            raise ValueError("menu rows are outside the screenshot")
+        luminance = (
+            row[..., 0] * 0.2126
+            + row[..., 1] * 0.7152
+            + row[..., 2] * 0.0722
+        )
+        brightness_by_row.append(float(np.median(luminance)))
+    return max(range(menu_size), key=brightness_by_row.__getitem__)
+
+
+async def focus_menu_item(
+    client: Any,
+    screenshot: Any,
+    menu: dict[str, Any],
+    item_name: str,
+) -> tuple[bool, str, Any]:
+    target_index = menu_item_index(menu, item_name)
+    current_screenshot = screenshot
+    for _ in range(4):
+        current_index = focused_menu_index(current_screenshot, len(menu))
+        if current_index == target_index:
+            return True, f"Focused {item_name}.", current_screenshot
+        key = "Down" if target_index > current_index else "Up"
+        steps = abs(target_index - current_index)
+        for _ in range(steps):
+            await desk.press_key(client, key)
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.25)
+        current_screenshot = await desk.capture_full_desktop(client)
+    return (
+        False,
+        f"Unable to focus {item_name} with keyboard navigation; exiting.",
+        current_screenshot,
+    )
+
+
 async def select_menu_item(
     client: Any,
     screenshot: Any,
@@ -258,10 +322,17 @@ async def select_menu_item(
     item_name: str,
     expected_heading: str,
 ) -> tuple[bool, str, Any]:
-    x, y = menu_item_center(screenshot, menu, item_name)
     updated_screenshot = screenshot
     for _ in range(3):
-        await desk.click_at(client, x, y)
+        focused, _, updated_screenshot = await focus_menu_item(
+            client,
+            updated_screenshot,
+            menu,
+            item_name,
+        )
+        if not focused:
+            continue
+        await desk.press_key(client, "e")
         await asyncio.sleep(1.0)
         updated_screenshot = await desk.capture_full_desktop(client)
         if desk.region_contains_text(
@@ -284,7 +355,7 @@ async def return_to_menu(
     expected_heading: str,
     excluded_heading: str,
 ) -> tuple[bool, str, Any]:
-    await desk.press_key(client, "BackSpace")
+    await desk.press_key(client, "q")
     await asyncio.sleep(1.0)
     screenshot = await desk.capture_full_desktop(client)
     expected_found = desk.region_contains_text(
@@ -303,7 +374,7 @@ async def return_to_menu(
     )
     if expected_found and not excluded_found:
         return True, f"Returned to {expected_heading}.", screenshot
-    return False, f"Backspace did not return to {expected_heading}; exiting.", screenshot
+    return False, f"Q did not return to {expected_heading}; exiting.", screenshot
 
 
 def read_leaf_integer(
@@ -472,8 +543,8 @@ async def modify_random_face_values(
     current_screenshot = root_screenshot
 
     for iteration in range(modification_count):
-        item_name = secrets.choice(item_names)
-        delta = secrets.choice((-1, 1))
+        item_name = system_random.choice(item_names)
+        delta = system_random.choice((-1, 1))
         changed, message, current_screenshot, actual_delta = (
             await modify_face_value(
                 client,
@@ -535,13 +606,20 @@ async def modify_face_value(
     if not selected:
         return False, message, submenu_screenshot, 0
 
-    x, y = menu_item_center(submenu_screenshot, submenu, item_name)
-    await desk.click_at(client, x, y)
+    focused, message, submenu_screenshot = await focus_menu_item(
+        client,
+        submenu_screenshot,
+        submenu,
+        item_name,
+    )
+    if not focused:
+        return False, message, submenu_screenshot, 0
+    await desk.press_key(client, "e")
     await desk.press_key(
         client,
         "Right" if requested_delta > 0 else "Left",
     )
-    await desk.press_key(client, "Return")
+    await desk.press_key(client, "e")
     await asyncio.sleep(1.0)
     modified_screenshot = await desk.capture_full_desktop(client)
     new_value, error_message = read_leaf_integer(
@@ -586,7 +664,7 @@ async def verify_desktop_controls(
     if not selected:
         return False, message, updated_screenshot
     print(
-        "Verified mouse control by selecting Adjust Face Template.",
+        "Verified keyboard control by selecting Adjust Face Template.",
         flush=True,
     )
 
@@ -597,7 +675,7 @@ async def verify_desktop_controls(
     )
     if not returned:
         return False, message, restored_screenshot
-    print("Verified keyboard control with Backspace.", flush=True)
+    print("Verified keyboard control with Q.", flush=True)
 
     selected, message, face_structure_screenshot = await select_menu_item(
         client,
@@ -851,8 +929,8 @@ def run(arguments: argparse.Namespace) -> None:
                         return screenshot
 
                     item_names = tuple(face_structure_leaf_paths())
-                    item_name = secrets.choice(item_names)
-                    requested_delta = secrets.choice((-1, 1))
+                    item_name = system_random.choice(item_names)
+                    requested_delta = system_random.choice((-1, 1))
                     ok, message, changed_screenshot, actual_delta = (
                         await modify_face_value(
                             client,

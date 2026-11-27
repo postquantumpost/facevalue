@@ -275,7 +275,7 @@ class DesktopTests(unittest.TestCase):
         contains_text.assert_called_once()
         print_message.assert_not_called()
 
-    def test_controls_click_then_backspace_and_recheck(self) -> None:
+    def test_controls_keyboard_navigation_and_q_recheck(self) -> None:
         screenshots = [
             np.full((2160, 3840, 4), index, dtype=np.uint8)
             for index in range(7)
@@ -286,9 +286,15 @@ class DesktopTests(unittest.TestCase):
 
         with (
             patch(
-                "facevalue.desk.click_at",
-                new=AsyncMock(),
-            ) as click_at,
+                "facevalue.focus_menu_item",
+                new=AsyncMock(
+                    side_effect=lambda _client, screenshot, _menu, item: (
+                        True,
+                        f"Focused {item}.",
+                        screenshot,
+                    )
+                ),
+            ),
             patch(
                 "facevalue.desk.capture_full_desktop",
                 new=AsyncMock(
@@ -339,18 +345,13 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(result[0])
         self.assertIn("completed", result[1].lower())
         self.assertIs(result[2], root_screenshot)
-        self.assertEqual(
-            click_at.await_args_list,
-            [
-                call(client, 310, 189),
-                call(client, 310, 245),
-                call(client, 310, 189),
-            ],
-        )
         self.assertEqual(press_key.await_args_list, [
-            call(client, "BackSpace"),
-            call(client, "BackSpace"),
-            call(client, "BackSpace"),
+            call(client, "e"),
+            call(client, "q"),
+            call(client, "e"),
+            call(client, "e"),
+            call(client, "q"),
+            call(client, "q"),
         ])
         self.assertEqual(sleep.await_count, 6)
         self.assertEqual(capture_full.await_count, 6)
@@ -411,6 +412,23 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(error, "")
         self.assertEqual(contains_text.call_args.args[4], "Nose Size")
 
+    def test_focused_menu_index_detects_brighter_row(self) -> None:
+        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+        screenshot[:, :, 3] = 255
+        for index in range(3):
+            top = 322 + 112 * index
+            screenshot[top : top + 112, 270:1996, :3] = 20
+        highlighted_top = 322 + 112
+        screenshot[
+            highlighted_top : highlighted_top + 112,
+            270:1996,
+            :3,
+        ] = 35
+
+        focused_index = facevalue.focused_menu_index(screenshot, 3)
+
+        self.assertEqual(focused_index, 1)
+
     def test_modify_random_face_values_updates_map_and_returns_home(self) -> None:
         screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
         client = object()
@@ -429,7 +447,7 @@ class DesktopTests(unittest.TestCase):
         try:
             with (
                 patch(
-                    "facevalue.secrets.choice",
+                    "facevalue.system_random.choice",
                     side_effect=[
                         "Nose Size", 1,
                     ],
@@ -443,9 +461,11 @@ class DesktopTests(unittest.TestCase):
                     new=AsyncMock(return_value=(True, "returned", screenshot)),
                 ) as return_menu,
                 patch(
-                    "facevalue.desk.click_at",
-                    new=AsyncMock(),
-                ) as click_at,
+                    "facevalue.focus_menu_item",
+                    new=AsyncMock(
+                        return_value=(True, "focused", screenshot)
+                    ),
+                ),
                 patch(
                     "facevalue.desk.press_key",
                     new=AsyncMock(),
@@ -484,11 +504,10 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual(choice.call_count, 2)
             self.assertEqual(select_menu.await_count, 2)
             self.assertEqual(return_menu.await_count, 2)
-            self.assertEqual(click_at.await_count, 1)
             self.assertIn(call(client, "Right"), press_key.await_args_list)
             self.assertEqual(
-                press_key.await_args_list.count(call(client, "Return")),
-                1,
+                press_key.await_args_list.count(call(client, "e")),
+                2,
             )
         finally:
             facevalue.current_face_value_state.clear()
@@ -513,7 +532,7 @@ class DesktopTests(unittest.TestCase):
         try:
             with (
                 patch(
-                    "facevalue.secrets.choice",
+                    "facevalue.system_random.choice",
                     side_effect=["Jaw Width", 1],
                 ) as choice,
                 patch(
@@ -532,12 +551,20 @@ class DesktopTests(unittest.TestCase):
             facevalue.current_face_value_state.clear()
             facevalue.current_face_value_state.update(original_state)
 
-    def test_controls_report_click_failure_without_backspace(self) -> None:
+    def test_random_generator_uses_operating_system_entropy(self) -> None:
+        import random
+
+        self.assertIsInstance(facevalue.system_random, random.SystemRandom)
+
+    def test_controls_report_keyboard_select_failure_without_q(self) -> None:
         screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
         client = object()
 
         with (
-            patch("facevalue.desk.click_at", new=AsyncMock()),
+            patch(
+                "facevalue.focus_menu_item",
+                new=AsyncMock(return_value=(False, "focus failed", screenshot)),
+            ),
             patch(
                 "facevalue.desk.capture_full_desktop",
                 new=AsyncMock(return_value=screenshot),
@@ -579,7 +606,7 @@ class DesktopTests(unittest.TestCase):
             )
 
         self.assertFalse(result[0])
-        self.assertIn("Backspace did not return", result[1])
+        self.assertIn("Q did not return", result[1])
 
 
 if __name__ == "__main__":

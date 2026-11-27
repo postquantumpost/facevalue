@@ -765,7 +765,9 @@ async def capture_desktop(
                     )
                 )
     except Exception as error:
-        publish(RuntimeError(f"desktop connection failed: {error}"))
+        message = f"desktop connection failed: {error}"
+        print(message, flush=True)
+        publish(RuntimeError(message))
         stop_event.set()
     finally:
         if state is not None:
