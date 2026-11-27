@@ -950,6 +950,14 @@ def run(arguments: argparse.Namespace) -> None:
                         f"{previous_value}, new value {changed_value}",
                         flush=True,
                     )
+                    if actual_delta == 0:
+                        print(
+                            f"No change to {item_name}: kept value "
+                            f"{changed_value} and match value "
+                            f"{desktop_consensus_match:.6f}",
+                            flush=True,
+                        )
+                        return changed_screenshot
                     candidate_score = await process_face(changed_screenshot)
                     previous_match = desktop_consensus_match
                     print(
@@ -957,7 +965,7 @@ def run(arguments: argparse.Namespace) -> None:
                         f"new value {candidate_score:.6f}",
                         flush=True,
                     )
-                    if candidate_score < previous_match and actual_delta:
+                    if candidate_score < previous_match:
                         reverted, revert_message, reverted_screenshot, revert_delta = (
                             await modify_face_value(
                                 client,

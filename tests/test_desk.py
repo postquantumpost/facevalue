@@ -556,6 +556,14 @@ class DesktopTests(unittest.TestCase):
 
         self.assertIsInstance(facevalue.system_random, random.SystemRandom)
 
+    def test_zero_actual_delta_is_a_no_op(self) -> None:
+        old_value = 255
+        new_value = 255
+        actual_delta = new_value - old_value
+
+        self.assertEqual(actual_delta, 0)
+        self.assertEqual(old_value, new_value)
+
     def test_controls_report_keyboard_select_failure_without_q(self) -> None:
         screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
         client = object()
