@@ -48,6 +48,8 @@ nominal_item_width = 1740
 nominal_item_height = 112
 nominal_slider_start = 700
 nominal_number_start = 1546
+nominal_number_y_offset_1 = 90
+nominal_number_y_offset_2 = 218
 
 alter_adjust_face_template = {
     "Bone Structure" : None
@@ -475,9 +477,9 @@ def read_leaf_integer(
 
     number_region = [
         nominal_menu_anchor[0] + nominal_number_start,
-        item_top,
+        item_top + nominal_number_y_offset_1,
         nominal_menu_anchor[0] + nominal_item_width,
-        item_top + nominal_item_height,
+        item_top + nominal_number_y_offset_2,
     ]
     number_text = desk.ocr_region_text(
         screenshot,
@@ -801,9 +803,9 @@ async def verify_desktop_controls(
 
     number_region = [
         nominal_menu_anchor[0] + nominal_number_start,
-        item_top,
+        item_top + nominal_number_y_offset_1,
         nominal_menu_anchor[0] + nominal_item_width,
-        item_top + nominal_item_height,
+        item_top + nominal_number_y_offset_2,
     ]
     number_text = desk.ocr_region_text(
         balance_screenshot,
