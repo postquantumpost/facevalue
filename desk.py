@@ -103,13 +103,12 @@ def scale_desktop(
     return np.asarray(canvas)
 
 
-def ocr_region_text(
+def prepare_ocr_region(
     image: np.ndarray,
     nominal_region: Sequence[int],
     nominal_width: int,
     nominal_height: int,
-    character_whitelist: str | None = None,
-) -> str:
+) -> Any:
     from PIL import Image, ImageEnhance, ImageOps
 
     if nominal_width <= 0 or nominal_height <= 0:
@@ -135,6 +134,39 @@ def ocr_region_text(
     region = region.resize(
         (region.width * 3, region.height * 3),
         Image.Resampling.LANCZOS,
+    )
+    return region
+
+
+def save_ocr_region(
+    image: np.ndarray,
+    nominal_region: Sequence[int],
+    nominal_width: int,
+    nominal_height: int,
+    destination: Path = Path("failed_ocr.png"),
+) -> Path:
+    destination = destination.resolve()
+    prepare_ocr_region(
+        image,
+        nominal_region,
+        nominal_width,
+        nominal_height,
+    ).save(destination, format="PNG")
+    return destination
+
+
+def ocr_region_text(
+    image: np.ndarray,
+    nominal_region: Sequence[int],
+    nominal_width: int,
+    nominal_height: int,
+    character_whitelist: str | None = None,
+) -> str:
+    region = prepare_ocr_region(
+        image,
+        nominal_region,
+        nominal_width,
+        nominal_height,
     )
     image_bytes = io.BytesIO()
     region.save(image_bytes, format="PNG")

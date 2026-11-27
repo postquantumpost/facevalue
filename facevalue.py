@@ -488,9 +488,16 @@ def read_leaf_integer(
     )
     match = re.search(r"[+-]?\d+", number_text)
     if match is None:
+        saved_path = desk.save_ocr_region(
+            screenshot,
+            number_region,
+            nominal_screen_width,
+            nominal_screen_height,
+        )
         return (
             None,
-            f"Unable to read {item_name} as an integer: {number_text!r}; exiting.",
+            f"Unable to read {item_name} as an integer: {number_text!r}; "
+            f"saved OCR crop to {saved_path}; exiting.",
         )
     return int(match.group()), ""
 
@@ -807,7 +814,13 @@ async def verify_desktop_controls(
     )
     match = re.search(r"[+-]?\d+", number_text)
     if match is None:
-        return False, f"Unable to read Nose Size as an integer: {number_text!r}; exiting.", balance_screenshot
+        saved_path = desk.save_ocr_region(
+            balance_screenshot,
+            number_region,
+            nominal_screen_width,
+            nominal_screen_height,
+        )
+        return False, f"Unable to read Nose Size as an integer: {number_text!r}; saved OCR crop to {saved_path}; exiting.", balance_screenshot
     nose_size = int(match.group())
     print(f"Nose Size: {nose_size}", flush=True)
 
