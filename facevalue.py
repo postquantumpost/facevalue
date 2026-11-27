@@ -44,10 +44,10 @@ nominal_menu_anchor = [ 270, 322 ]
 # to the slider start. The slider space is from slider
 # start to number start. The number is from number start
 # to the end of the bounding box.
-nominal_item_width = 1726
+nominal_item_width = 1740
 nominal_item_height = 112
 nominal_slider_start = 700
-nominal_number_start = 1585
+nominal_number_start = 1546
 
 alter_adjust_face_template = {
     "Bone Structure" : None
@@ -694,7 +694,7 @@ async def modify_face_value(
         "Right" if requested_delta > 0 else "Left",
     )
     await desk.press_key(client, "e")
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(2.0)
     modified_screenshot = await desk.capture_full_desktop(client)
     new_value, error_message = read_leaf_integer(
         modified_screenshot,
