@@ -48,8 +48,8 @@ nominal_item_width = 1740
 nominal_item_height = 112
 nominal_slider_start = 700
 nominal_number_start = 1546
-nominal_number_y_offset_1 = 90
-nominal_number_y_offset_2 = 218
+nominal_number_y_offset_1 = 20
+nominal_number_y_offset_2 = 90
 
 alter_adjust_face_template = {
     "Bone Structure" : None

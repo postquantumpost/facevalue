@@ -103,13 +103,13 @@ def scale_desktop(
     return np.asarray(canvas)
 
 
-def prepare_ocr_region(
+def crop_ocr_region(
     image: np.ndarray,
     nominal_region: Sequence[int],
     nominal_width: int,
     nominal_height: int,
 ) -> Any:
-    from PIL import Image, ImageEnhance, ImageOps
+    from PIL import Image
 
     if nominal_width <= 0 or nominal_height <= 0:
         raise ValueError("nominal screen dimensions must be greater than zero")
@@ -127,7 +127,23 @@ def prepare_ocr_region(
     if x2 <= x1 or y2 <= y1:
         raise ValueError("scaled screen region is outside the screenshot")
 
-    region = Image.fromarray(np.asarray(image).copy()).crop((x1, y1, x2, y2))
+    return Image.fromarray(np.asarray(image).copy()).crop((x1, y1, x2, y2))
+
+
+def prepare_ocr_region(
+    image: np.ndarray,
+    nominal_region: Sequence[int],
+    nominal_width: int,
+    nominal_height: int,
+) -> Any:
+    from PIL import Image, ImageEnhance, ImageOps
+
+    region = crop_ocr_region(
+        image,
+        nominal_region,
+        nominal_width,
+        nominal_height,
+    )
     region = ImageOps.grayscale(region)
     region = ImageOps.autocontrast(region)
     region = ImageEnhance.Contrast(region).enhance(2.0)
@@ -152,6 +168,15 @@ def save_ocr_region(
         nominal_width,
         nominal_height,
     ).save(destination, format="PNG")
+    raw_destination = destination.with_name(
+        f"{destination.stem}_raw{destination.suffix}"
+    )
+    crop_ocr_region(
+        image,
+        nominal_region,
+        nominal_width,
+        nominal_height,
+    ).save(raw_destination, format="PNG")
     return destination
 
 

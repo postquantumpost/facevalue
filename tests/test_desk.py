@@ -412,6 +412,17 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(error, "")
         self.assertEqual(contains_text.call_args.args[4], "Nose Size")
 
+    def test_number_crop_offsets_stay_inside_menu_item(self) -> None:
+        self.assertGreaterEqual(facevalue.nominal_number_y_offset_1, 0)
+        self.assertLess(
+            facevalue.nominal_number_y_offset_1,
+            facevalue.nominal_number_y_offset_2,
+        )
+        self.assertLessEqual(
+            facevalue.nominal_number_y_offset_2,
+            facevalue.nominal_item_height,
+        )
+
     def test_focused_menu_index_detects_brighter_row(self) -> None:
         screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
         screenshot[:, :, 3] = 255
