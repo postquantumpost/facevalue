@@ -494,6 +494,44 @@ class DesktopTests(unittest.TestCase):
             facevalue.current_face_value_state.clear()
             facevalue.current_face_value_state.update(original_state)
 
+    def test_random_modification_uses_all_face_values_when_testmode_false(self) -> None:
+        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+        client = object()
+        original_testmode = facevalue.testmode
+        original_state = facevalue.current_face_value_state.copy()
+        facevalue.testmode = False
+        paths = {
+            item_name: (submenu_name, submenu)
+            for submenu_name, submenu in facevalue.alter_face_structure.items()
+            for item_name in submenu
+            if submenu[item_name] is None
+        }
+        facevalue.current_face_value_state.clear()
+        facevalue.current_face_value_state.update(
+            {item_name: 100 for item_name in paths}
+        )
+        try:
+            with (
+                patch(
+                    "facevalue.secrets.choice",
+                    side_effect=["Jaw Width", 1],
+                ) as choice,
+                patch(
+                    "facevalue.modify_face_value",
+                    new=AsyncMock(return_value=(True, "", screenshot, 1)),
+                ),
+            ):
+                result = asyncio.run(
+                    facevalue.modify_random_face_values(client, screenshot)
+                )
+
+            self.assertTrue(result[0])
+            self.assertIn("Jaw Width", choice.call_args_list[0].args[0])
+        finally:
+            facevalue.testmode = original_testmode
+            facevalue.current_face_value_state.clear()
+            facevalue.current_face_value_state.update(original_state)
+
     def test_controls_report_click_failure_without_backspace(self) -> None:
         screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
         client = object()

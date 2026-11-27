@@ -3,4 +3,5 @@ set -x
 
 source .venv/bin/activate
 
-./facevalue.py --desktop nose.json --input face2.json --window true 2>&1 | tee e0
+#./facevalue.py --desktop nose.json --input face2.json --window true 2>&1 | tee e0
+./facevalue.py --testmode false --desktop nose.json --input face2.json --window true 2>&1 | tee e0

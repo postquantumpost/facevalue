@@ -460,11 +460,13 @@ async def modify_random_face_values(
 ) -> tuple[bool, str, Any]:
     if not current_face_value_state:
         return False, "No face values are available to modify; exiting.", root_screenshot
-    item_names = tuple(alter_facial_balance)
+    leaf_paths = face_structure_leaf_paths()
+    item_names = tuple(leaf_paths)
     if not set(item_names).issubset(current_face_value_state):
+        scope = "Facial Balance" if testmode else "Face Structure"
         return (
             False,
-            "Facial Balance values have not all been read; exiting.",
+            f"{scope} values have not all been read; exiting.",
             root_screenshot,
         )
     current_screenshot = root_screenshot
@@ -848,7 +850,7 @@ def run(arguments: argparse.Namespace) -> None:
                         )
                         return screenshot
 
-                    item_names = tuple(alter_facial_balance)
+                    item_names = tuple(face_structure_leaf_paths())
                     item_name = secrets.choice(item_names)
                     requested_delta = secrets.choice((-1, 1))
                     ok, message, changed_screenshot, actual_delta = (
