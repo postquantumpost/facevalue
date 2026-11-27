@@ -37,6 +37,10 @@ StartupControlCheck = Callable[
     [Any, np.ndarray],
     Awaitable[tuple[bool, str, np.ndarray]],
 ]
+ContinuingControlCheck = Callable[
+    [Any, np.ndarray],
+    Awaitable[np.ndarray],
+]
 
 
 def read_config(config_path: Path) -> DesktopConfig:
@@ -686,6 +690,7 @@ async def capture_desktop(
     startup_screen_check: StartupScreenCheck | None = None,
     startup_control_check: StartupControlCheck | None = None,
     stop_after_startup: bool = False,
+    continuing_control_check: ContinuingControlCheck | None = None,
 ) -> None:
     def publish(item: Any) -> None:
         try:
@@ -744,6 +749,10 @@ async def capture_desktop(
                     publish(scale_desktop(screenshot))
                     stop_event.set()
                     break
+                if continuing_control_check is not None:
+                    screenshot = await continuing_control_check(client, screenshot)
+                    if state is not None:
+                        state["desktop_screenshot"] = screenshot
                 publish(
                     f"Connected to {config.host}; full desktop captured"
                 )
@@ -757,6 +766,7 @@ async def capture_desktop(
                 )
     except Exception as error:
         publish(RuntimeError(f"desktop connection failed: {error}"))
+        stop_event.set()
     finally:
         if state is not None:
             state["desktop_client"] = None
@@ -799,6 +809,7 @@ def display_desktop(
     startup_control_check: StartupControlCheck | None = None,
     stop_after_startup: bool = False,
     on_screenshot: Callable[[np.ndarray], None] | None = None,
+    continuing_control_check: ContinuingControlCheck | None = None,
 ) -> np.ndarray | None:
     if update_seconds <= 0:
         raise ValueError("update_seconds must be greater than zero")
@@ -813,6 +824,8 @@ def display_desktop(
 
     frame_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
     stop_event = threading.Event()
+    if state is not None:
+        state["desktop_stop_event"] = stop_event
     worker = threading.Thread(
         target=lambda: asyncio.run(
             capture_desktop(
@@ -824,6 +837,7 @@ def display_desktop(
                 startup_screen_check,
                 startup_control_check,
                 stop_after_startup,
+                continuing_control_check,
             )
         ),
         daemon=True,
@@ -899,7 +913,10 @@ def display_desktop(
                     axis.axis("off")
                     canvas.draw_idle()
                     if stop_event.is_set():
-                        window.destroy()
+                        if parent is not None and parent.winfo_exists():
+                            parent.destroy()
+                        elif window.winfo_exists():
+                            window.destroy()
                 else:
                     last_frame = item
         except queue.Empty:
@@ -917,7 +934,10 @@ def display_desktop(
             if stop_event.is_set() and not worker.is_alive():
                 completion_frame_rendered = True
         if completion_frame_rendered:
-            window.destroy()
+            if parent is not None and parent.winfo_exists():
+                parent.destroy()
+            elif window.winfo_exists():
+                window.destroy()
 
     timer_id = ""
 
@@ -929,6 +949,14 @@ def display_desktop(
         except tk.TclError:
             pass
 
+    def close_windows() -> None:
+        stop_event.set()
+        if parent is not None and parent.winfo_exists():
+            parent.destroy()
+        elif window.winfo_exists():
+            window.destroy()
+
+    window.protocol("WM_DELETE_WINDOW", close_windows)
     timer_id = window.after(0, tick)
     try:
         if parent is None:
@@ -943,8 +971,13 @@ def display_desktop(
             except tk.TclError:
                 pass
         worker.join(timeout=1.0)
-        if window.winfo_exists():
-            window.destroy()
+        try:
+            if window.winfo_exists():
+                window.destroy()
+        except tk.TclError:
+            pass
+    if state is not None:
+        state.pop("desktop_stop_event", None)
     if state is None:
         return None
     return state.get("desktop_screenshot")

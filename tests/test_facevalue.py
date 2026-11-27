@@ -155,6 +155,27 @@ class FaceValueTests(unittest.TestCase):
         self.assertEqual(data["deepface"]["embeddings"][-1], embedding)
         self.assertEqual(data["consensus"]["source_image_ids"], ["image-1"])
 
+    def test_desktop_consensus_similarity_uses_cosine_score(self) -> None:
+        data = {
+            "deepface": {
+                "embeddings": [
+                    {
+                        "image_id": "desktop-face",
+                        "embedding": [1.0, 0.0],
+                    }
+                ]
+            },
+            "consensus": {
+                "deepface": {
+                    "embedding": [0.5, 0.5],
+                }
+            },
+        }
+
+        score = facevalue.desktop_consensus_similarity(data)
+
+        self.assertAlmostEqual(score, 2 ** -0.5)
+
     def test_supported_images_uses_every_supported_file_in_name_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

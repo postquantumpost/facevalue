@@ -933,3 +933,36 @@ def add_display_only_placeholder(
             "error": "Waiting for the first desktop frame",
         }
     )
+
+
+def desktop_consensus_similarity(data: dict[str, Any]) -> float:
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise RuntimeError(
+            "numeric dependencies are missing; install requirements.txt"
+        ) from error
+
+    desktop_records = [
+        record
+        for record in data["deepface"]["embeddings"]
+        if record.get("image_id") == "desktop-face"
+    ]
+    if len(desktop_records) != 1:
+        raise ValueError("desktop face embedding is unavailable")
+    desktop_embedding = np.asarray(
+        desktop_records[0]["embedding"],
+        dtype=np.float64,
+    )
+    consensus_embedding = np.asarray(
+        data["consensus"]["deepface"]["embedding"],
+        dtype=np.float64,
+    )
+    if desktop_embedding.shape != consensus_embedding.shape:
+        raise ValueError("desktop face and consensus embeddings differ in size")
+    denominator = np.linalg.norm(desktop_embedding) * np.linalg.norm(
+        consensus_embedding
+    )
+    if denominator == 0:
+        raise ValueError("cannot compare a zero face embedding")
+    return float(np.dot(desktop_embedding, consensus_embedding) / denominator)

@@ -7,7 +7,6 @@ import queue
 import re
 import secrets
 import tempfile
-import threading
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -22,6 +21,7 @@ state: dict[str, Any] = {
     "desktop_config": None,
 }
 current_face_value_state: dict[str, int] = {}
+desktop_consensus_match: float | None = None
 
 # UI location info
 # Nominal screen size
@@ -212,6 +212,14 @@ def menu_item_index(menu: dict[str, Any], item_name: str) -> int:
         return list(menu).index(item_name)
     except ValueError as error:
         raise RuntimeError(f"{item_name} is missing from the menu definition") from error
+
+
+def analyze_desktop_face(
+    data: dict[str, Any],
+    desktop_face_path: Path,
+) -> float:
+    face.add_display_only_image(data, desktop_face_path)
+    return face.desktop_consensus_similarity(data)
 
 
 def menu_item_center(
@@ -452,7 +460,6 @@ async def modify_random_face_values(
 ) -> tuple[bool, str, Any]:
     if not current_face_value_state:
         return False, "No face values are available to modify; exiting.", root_screenshot
-    leaf_paths = face_structure_leaf_paths()
     item_names = tuple(alter_facial_balance)
     if not set(item_names).issubset(current_face_value_state):
         return (
@@ -465,78 +472,102 @@ async def modify_random_face_values(
     for iteration in range(modification_count):
         item_name = secrets.choice(item_names)
         delta = secrets.choice((-1, 1))
-        try:
-            submenu_name, submenu = leaf_paths[item_name]
-        except KeyError:
-            return (
-                False,
-                f"{item_name} is missing from the Face Structure tree; exiting.",
+        changed, message, current_screenshot, actual_delta = (
+            await modify_face_value(
+                client,
                 current_screenshot,
+                item_name,
+                delta,
             )
-
-        selected, message, structure_screenshot = await select_menu_item(
-            client,
-            current_screenshot,
-            alter_face_and_hair_names,
-            "Face Structure",
-            "Alter Face & Hair > Face Structure",
         )
-        if not selected:
-            return False, message, structure_screenshot
-
-        selected, message, submenu_screenshot = await select_menu_item(
-            client,
-            structure_screenshot,
-            alter_face_structure,
-            submenu_name,
-            f"Alter Face & Hair > Face Structure > {submenu_name}",
-        )
-        if not selected:
-            return False, message, submenu_screenshot
-
-        x, y = menu_item_center(submenu_screenshot, submenu, item_name)
-        await desk.click_at(client, x, y)
-        await desk.press_key(client, "Right" if delta > 0 else "Left")
-        await desk.press_key(client, "Return")
-        await asyncio.sleep(1.0)
-        modified_screenshot = await desk.capture_full_desktop(client)
-        new_value, error_message = read_leaf_integer(
-            modified_screenshot,
-            submenu,
-            item_name,
-        )
-        if new_value is None:
-            return False, error_message, modified_screenshot
-        old_value = current_face_value_state[item_name]
-        current_face_value_state[item_name] = new_value
+        if not changed and message:
+            return False, message, current_screenshot
+        old_value = current_face_value_state[item_name] - actual_delta
         print(
             f"Modified {item_name}: requested {delta:+d}, "
-            f"actual {old_value} -> {new_value} "
+            f"actual {old_value} -> {current_face_value_state[item_name]} "
             f"[{iteration + 1}/{modification_count}]",
             flush=True,
         )
-
-        returned, message, structure_screenshot = await return_to_menu(
-            client,
-            "Alter Face & Hair > Face Structure",
-            submenu_name,
-        )
-        if not returned:
-            return False, message, structure_screenshot
-
-        returned, message, current_screenshot = await return_to_menu(
-            client,
-            "Alter Face & Hair",
-            "Face Structure",
-        )
-        if not returned:
-            return False, message, current_screenshot
 
     return (
         True,
         f"Completed {modification_count} random face value modifications.",
         current_screenshot,
     )
+
+
+async def modify_face_value(
+    client: Any,
+    root_screenshot: Any,
+    item_name: str,
+    requested_delta: int,
+) -> tuple[bool, str, Any, int]:
+    paths = face_structure_leaf_paths()
+    try:
+        submenu_name, submenu = paths[item_name]
+    except KeyError:
+        return (
+            False,
+            f"{item_name} is missing from the Face Structure tree; exiting.",
+            root_screenshot,
+            0,
+        )
+
+    selected, message, structure_screenshot = await select_menu_item(
+        client,
+        root_screenshot,
+        alter_face_and_hair_names,
+        "Face Structure",
+        "Alter Face & Hair > Face Structure",
+    )
+    if not selected:
+        return False, message, structure_screenshot, 0
+    selected, message, submenu_screenshot = await select_menu_item(
+        client,
+        structure_screenshot,
+        alter_face_structure,
+        submenu_name,
+        f"Alter Face & Hair > Face Structure > {submenu_name}",
+    )
+    if not selected:
+        return False, message, submenu_screenshot, 0
+
+    x, y = menu_item_center(submenu_screenshot, submenu, item_name)
+    await desk.click_at(client, x, y)
+    await desk.press_key(
+        client,
+        "Right" if requested_delta > 0 else "Left",
+    )
+    await desk.press_key(client, "Return")
+    await asyncio.sleep(1.0)
+    modified_screenshot = await desk.capture_full_desktop(client)
+    new_value, error_message = read_leaf_integer(
+        modified_screenshot,
+        submenu,
+        item_name,
+    )
+    if new_value is None:
+        return False, error_message, modified_screenshot, 0
+    old_value = current_face_value_state[item_name]
+    actual_delta = new_value - old_value
+    current_face_value_state[item_name] = new_value
+
+    returned, message, structure_screenshot = await return_to_menu(
+        client,
+        "Alter Face & Hair > Face Structure",
+        submenu_name,
+    )
+    if not returned:
+        return False, message, structure_screenshot, actual_delta
+    returned, message, root_screenshot = await return_to_menu(
+        client,
+        "Alter Face & Hair",
+        "Face Structure",
+    )
+    if not returned:
+        return False, message, root_screenshot, actual_delta
+    return True, "", root_screenshot, actual_delta
 
 
 async def verify_desktop_controls(
@@ -730,8 +761,9 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def run(arguments: argparse.Namespace) -> None:
-    global testmode
+    global desktop_consensus_match, testmode
     testmode = getattr(arguments, "testmode", True)
+    desktop_consensus_match = None
     if arguments.desktop is not None:
         config = desk.read_config(arguments.desktop)
         state["desktop_config"] = config
@@ -753,15 +785,12 @@ def run(arguments: argparse.Namespace) -> None:
             from PIL import Image
 
             with tempfile.TemporaryDirectory() as temporary_directory:
-                desktop_face_path = Path(temporary_directory) / "desktop-face.png"
                 face.add_display_only_placeholder(data)
                 face_figure = face.show_window(data, block=False)
                 completed_updates: queue.Queue[Any] = queue.Queue(maxsize=1)
-                analysis_running = threading.Event()
-                startup_capture_pending = True
+                capture_number = 0
 
-                def update_face_feedback(screenshot: Any) -> None:
-                    nonlocal startup_capture_pending
+                def update_face_feedback(_: Any) -> None:
                     try:
                         updated_data = completed_updates.get_nowait()
                     except queue.Empty:
@@ -773,33 +802,102 @@ def run(arguments: argparse.Namespace) -> None:
                             face.write_output(arguments.output, data)
                         face.update_figure(face_figure, data)
 
-                    if analysis_running.is_set() or not startup_capture_pending:
-                        return
-                    startup_capture_pending = False
+                async def process_face(
+                    screenshot: Any,
+                ) -> float:
+                    nonlocal capture_number
+                    capture_number += 1
+                    capture_path = (
+                        Path(temporary_directory)
+                        / f"desktop-face-{capture_number}.png"
+                    )
                     _, width_px = screenshot.shape[:2]
                     desktop_face = screenshot[
                         :, round(width_px * 0.52) :, :3
                     ]
-                    Image.fromarray(desktop_face).save(desktop_face_path)
+                    Image.fromarray(desktop_face).save(capture_path)
                     analysis_data = copy.deepcopy(data)
-                    analysis_running.set()
+                    match_score = await asyncio.to_thread(
+                        analyze_desktop_face,
+                        analysis_data,
+                        capture_path,
+                    )
+                    try:
+                        completed_updates.put_nowait(analysis_data)
+                    except queue.Full:
+                        completed_updates.get_nowait()
+                        completed_updates.put_nowait(analysis_data)
+                    return match_score
 
-                    def analyze() -> None:
-                        try:
-                            face.add_display_only_image(
-                                analysis_data,
-                                desktop_face_path,
-                            )
-                            completed_updates.put_nowait(analysis_data)
-                        except (RuntimeError, ValueError) as error:
-                            print(
-                                f"Desktop face update failed: {error}",
-                                flush=True,
-                            )
-                        finally:
-                            analysis_running.clear()
+                async def optimize_once(
+                    client: Any,
+                    screenshot: Any,
+                ) -> Any:
+                    global desktop_consensus_match
+                    match_score = await process_face(screenshot)
+                    if desktop_consensus_match is None:
+                        desktop_consensus_match = match_score
+                        print(
+                            f"Initial desktop/consensus match: {match_score:.6f}",
+                            flush=True,
+                        )
+                        return screenshot
 
-                    threading.Thread(target=analyze, daemon=True).start()
+                    item_names = tuple(alter_facial_balance)
+                    item_name = secrets.choice(item_names)
+                    requested_delta = secrets.choice((-1, 1))
+                    ok, message, changed_screenshot, actual_delta = (
+                        await modify_face_value(
+                            client,
+                            screenshot,
+                            item_name,
+                            requested_delta,
+                        )
+                    )
+                    if not ok:
+                        raise RuntimeError(message)
+                    candidate_score = await process_face(changed_screenshot)
+                    if candidate_score < desktop_consensus_match and actual_delta:
+                        reverted, revert_message, reverted_screenshot, _ = (
+                            await modify_face_value(
+                                client,
+                                changed_screenshot,
+                                item_name,
+                                -actual_delta,
+                            )
+                        )
+                        if not reverted:
+                            raise RuntimeError(revert_message)
+                        await process_face(reverted_screenshot)
+                        print(
+                            f"Reverted {item_name}: match "
+                            f"{candidate_score:.6f} < "
+                            f"{desktop_consensus_match:.6f}",
+                            flush=True,
+                        )
+                        return reverted_screenshot
+
+                    desktop_consensus_match = candidate_score
+                    print(
+                        f"Kept {item_name}: match "
+                        f"{candidate_score:.6f} >= previous score",
+                        flush=True,
+                    )
+                    return changed_screenshot
+
+                def close_all_windows() -> None:
+                    stop_event = state.get("desktop_stop_event")
+                    if stop_event is not None:
+                        stop_event.set()
+                    try:
+                        face_figure._facevalue_tk_window.destroy()
+                    except Exception:
+                        pass
+
+                face_figure._facevalue_tk_window.protocol(
+                    "WM_DELETE_WINDOW",
+                    close_all_windows,
+                )
 
                 try:
                     desk.display_desktop(
@@ -809,9 +907,13 @@ def run(arguments: argparse.Namespace) -> None:
                         startup_screen_check=verify_desktop_display,
                         startup_control_check=verify_desktop_controls,
                         on_screenshot=update_face_feedback,
+                        continuing_control_check=optimize_once,
                     )
                 finally:
-                    face_figure._facevalue_tk_window.destroy()
+                    try:
+                        face_figure._facevalue_tk_window.destroy()
+                    except Exception:
+                        pass
             return
         if arguments.window and arguments.testmode:
             desk.display_desktop(
