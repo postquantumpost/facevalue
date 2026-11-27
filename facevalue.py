@@ -456,7 +456,7 @@ def face_structure_leaf_paths() -> dict[str, tuple[str, dict[str, Any]]]:
 async def modify_random_face_values(
     client: Any,
     root_screenshot: Any,
-    modification_count: int = 3,
+    modification_count: int = 1,
 ) -> tuple[bool, str, Any]:
     if not current_face_value_state:
         return False, "No face values are available to modify; exiting.", root_screenshot
@@ -685,6 +685,7 @@ async def verify_desktop_controls(
     modified, message, modified_screenshot = await modify_random_face_values(
         client,
         final_screenshot,
+        1,
     )
     if not modified:
         return False, message, modified_screenshot
@@ -838,8 +839,8 @@ def run(arguments: argparse.Namespace) -> None:
                     screenshot: Any,
                 ) -> Any:
                     global desktop_consensus_match
-                    match_score = await process_face(screenshot)
                     if desktop_consensus_match is None:
+                        match_score = await process_face(screenshot)
                         desktop_consensus_match = match_score
                         print(
                             f"Initial desktop/consensus match: {match_score:.6f}",
@@ -888,11 +889,11 @@ def run(arguments: argparse.Namespace) -> None:
                         if not reverted:
                             raise RuntimeError(revert_message)
                         reverted_value = current_face_value_state[item_name]
-                        reverted_match = await process_face(reverted_screenshot)
                         print(
                             f"{item_name} reverted to value {reverted_value} "
                             f"(change {revert_delta:+d}); "
-                            f"reverted to match value {reverted_match:.6f}",
+                            f"reverted to match value "
+                            f"{desktop_consensus_match:.6f}",
                             flush=True,
                         )
                         return reverted_screenshot

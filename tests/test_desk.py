@@ -387,7 +387,7 @@ class DesktopTests(unittest.TestCase):
             "-+0123456789",
         )
         read_all.assert_awaited_once_with(client, root_screenshot)
-        modify_random.assert_awaited_once_with(client, root_screenshot)
+        modify_random.assert_awaited_once_with(client, root_screenshot, 1)
 
     def test_read_leaf_integer_validates_label_and_reads_number(self) -> None:
         screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
@@ -432,8 +432,6 @@ class DesktopTests(unittest.TestCase):
                     "facevalue.secrets.choice",
                     side_effect=[
                         "Nose Size", 1,
-                        "Horiz. Face Ratio", -1,
-                        "Nose Size", -1,
                     ],
                 ) as choice,
                 patch(
@@ -460,8 +458,6 @@ class DesktopTests(unittest.TestCase):
                     "facevalue.read_leaf_integer",
                     side_effect=[
                         (126, ""),
-                        (181, ""),
-                        (125, ""),
                     ],
                 ),
                 patch(
@@ -477,23 +473,22 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual(
                 facevalue.current_face_value_state,
                 {
-                    "Nose Size": 125,
+                    "Nose Size": 126,
                     "Nose/Forehead Ratio": 110,
                     "Face Protrusion": 147,
                     "Vert. Face Ratio": 143,
                     "Facial Feature Slant": 146,
-                    "Horiz. Face Ratio": 181,
+                    "Horiz. Face Ratio": 182,
                 },
             )
-            self.assertEqual(choice.call_count, 6)
-            self.assertEqual(select_menu.await_count, 6)
-            self.assertEqual(return_menu.await_count, 6)
-            self.assertEqual(click_at.await_count, 3)
+            self.assertEqual(choice.call_count, 2)
+            self.assertEqual(select_menu.await_count, 2)
+            self.assertEqual(return_menu.await_count, 2)
+            self.assertEqual(click_at.await_count, 1)
             self.assertIn(call(client, "Right"), press_key.await_args_list)
-            self.assertIn(call(client, "Left"), press_key.await_args_list)
             self.assertEqual(
                 press_key.await_args_list.count(call(client, "Return")),
-                3,
+                1,
             )
         finally:
             facevalue.current_face_value_state.clear()
