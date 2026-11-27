@@ -6,10 +6,10 @@ import threading
 import unittest
 import zlib
 from pathlib import Path
-from subprocess import CompletedProcess
 from unittest.mock import AsyncMock, call, patch
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 import desk
 import facevalue
@@ -47,26 +47,131 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(scaled.shape, (480, 640, 4))
         self.assertFalse(scaled[:80, :, :3].any())
 
-    def test_region_contains_text_uses_normalized_ocr_output(self) -> None:
-        image = np.zeros((1080, 1920, 4), dtype=np.uint8)
-        image[:, :, 3] = 255
-        result = CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=b"  CoSmeTics \n",
-            stderr=b"",
+    def test_number_recognizer_reads_every_template_sample(self) -> None:
+        samples_directory = Path(__file__).parents[1] / "samples"
+        samples = {
+            **{
+                f"good{sample_number}.png": value
+                for sample_number, value in desk.NUMBER_SAMPLE_VALUES.items()
+            },
+            **desk.NUMBER_ADDITIONAL_SAMPLE_VALUES,
+        }
+        for sample_name, expected_value in samples.items():
+            sample_path = samples_directory / sample_name
+            with self.subTest(sample=sample_path.name):
+                with Image.open(sample_path) as sample:
+                    image = np.asarray(sample)
+                height_px, width_px = image.shape[:2]
+                value, detail = desk.recognize_integer_region(
+                    image,
+                    [0, 0, width_px, height_px],
+                    width_px,
+                    height_px,
+                )
+
+                self.assertEqual(value, expected_value)
+                self.assertTrue(detail)
+
+    def test_text_ocr_uses_real_tesseract_invocation(self) -> None:
+        image = Image.new("RGBA", (240, 70), (0, 0, 0, 255))
+        drawing = ImageDraw.Draw(image)
+        drawing.text(
+            (10, 5),
+            "Cosmetics",
+            fill=(255, 255, 255, 255),
+            font=ImageFont.load_default(size=40),
         )
 
-        with patch("desk.subprocess.run", return_value=result):
-            contains_text = desk.region_contains_text(
-                image,
-                [231, 82, 507, 145],
-                3840,
-                2160,
-                "Cosmetics",
-            )
+        detected_text = desk.ocr_region_text(
+            np.asarray(image),
+            [0, 0, 240, 70],
+            240,
+            70,
+        )
 
-        self.assertTrue(contains_text)
+        self.assertEqual(detected_text, "Cosmetics")
+
+    def test_number_recognizer_reads_failed_ocr_samples(self) -> None:
+        samples_directory = Path(__file__).parents[1] / "samples"
+        for sample_name, expected_value in (
+            ("failed_ocr_raw.png", 125),
+            ("failed_ocr_raw3.png", 170),
+            ("failed4_n1.png", 74),
+            ("failed9_n1.png", 129),
+            ("failed5_n1.png", 58),
+        ):
+            with self.subTest(sample=sample_name):
+                with Image.open(samples_directory / sample_name) as sample:
+                    image = np.asarray(sample)
+                height_px, width_px = image.shape[:2]
+                value, detail = desk.recognize_integer_region(
+                    image,
+                    [0, 0, width_px, height_px],
+                    width_px,
+                    height_px,
+                )
+
+                self.assertEqual(value, expected_value)
+                self.assertTrue(detail)
+
+    def test_number_recognizer_digits_cover_zero_to_nine(self) -> None:
+        templates = desk.number_templates()
+
+        self.assertEqual(set(templates), set("0123456789"))
+        self.assertTrue(all(templates[digit] for digit in templates))
+        self.assertAlmostEqual(desk.NUMBER_RECOGNITION_MAX_ERROR, 0.0605)
+
+    def test_real_number_samples_reconcile_through_application(self) -> None:
+        samples_directory = Path(__file__).parents[1] / "samples"
+        number_region = [1816, 342, 2010, 412]
+        for sample_name, expected_value in (
+            ("failed_ocr_raw.png", 125),
+            ("failed_ocr_raw3.png", 170),
+        ):
+            with self.subTest(sample=sample_name):
+                screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+                with Image.open(samples_directory / sample_name) as sample:
+                    sample_pixels = np.asarray(sample)
+                x1, y1, x2, y2 = number_region
+                screenshot[y1:y2, x1:x2] = sample_pixels
+
+                value, error = facevalue.read_integer_region(
+                    screenshot,
+                    "Nose Size",
+                    number_region,
+                    expected_values=(expected_value, expected_value + 1),
+                )
+
+                self.assertEqual(value, expected_value)
+                self.assertEqual(error, "")
+
+    def test_number_recognizer_rejects_out_of_range_values(self) -> None:
+        samples_directory = Path(__file__).parents[1] / "samples"
+        with Image.open(samples_directory / "good27.png") as sample:
+            three_digit_image = np.asarray(sample)
+        glyphs_98 = desk.segment_number_glyphs(
+            Image.fromarray(three_digit_image)
+        )
+        source_digits = glyphs_98 + glyphs_98[1:]
+        foreground = np.full((70, 194, 4), 0, dtype=np.uint8)
+        foreground[:, :, 3] = 255
+        x = 64
+        for glyph in source_digits:
+            height_px, width_px = glyph.shape
+            foreground[14 : 14 + height_px, x : x + width_px, :3] = (
+                glyph[:, :, np.newaxis] * 255
+            )
+            x += width_px + 3
+
+        value, detail = desk.recognize_integer_region(
+            foreground,
+            [0, 0, 194, 70],
+            194,
+            70,
+        )
+
+        self.assertIsNone(value)
+        self.assertIn("outside 0 to 255", detail)
 
     def test_click_at_moves_through_intermediate_points(self) -> None:
         client = unittest.mock.Mock()
@@ -321,9 +426,9 @@ class DesktopTests(unittest.TestCase):
                 ],
             ) as contains_text,
             patch(
-                "facevalue.desk.ocr_region_text",
-                return_value="123",
-            ) as ocr_region,
+                "facevalue.read_integer_region",
+                return_value=(123, ""),
+            ) as read_integer,
             patch(
                 "facevalue.read_all_face_structure_values",
                 new=AsyncMock(
@@ -383,34 +488,9 @@ class DesktopTests(unittest.TestCase):
             contains_text.call_args_list[9].args[4],
             "Face Structure",
         )
-        self.assertEqual(
-            ocr_region.call_args.args[4],
-            "-+0123456789",
-        )
+        read_integer.assert_called_once()
         read_all.assert_awaited_once_with(client, root_screenshot)
         modify_random.assert_awaited_once_with(client, root_screenshot, 1)
-
-    def test_read_leaf_integer_validates_label_and_reads_number(self) -> None:
-        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
-        with (
-            patch(
-                "facevalue.desk.region_contains_text",
-                return_value=True,
-            ) as contains_text,
-            patch(
-                "facevalue.desk.ocr_region_text",
-                return_value="-25",
-            ),
-        ):
-            value, error = facevalue.read_leaf_integer(
-                screenshot,
-                facevalue.alter_facial_balance,
-                "Nose Size",
-            )
-
-        self.assertEqual(value, -25)
-        self.assertEqual(error, "")
-        self.assertEqual(contains_text.call_args.args[4], "Nose Size")
 
     def test_number_crop_offsets_stay_inside_menu_item(self) -> None:
         self.assertGreaterEqual(facevalue.nominal_number_y_offset_1, 0)
@@ -628,6 +708,73 @@ class DesktopTests(unittest.TestCase):
                 press_key.await_args_list.count(call(client, "e")),
                 2,
             )
+        finally:
+            facevalue.current_face_value_state.clear()
+            facevalue.current_face_value_state.update(original_state)
+
+    def test_modify_face_value_reverts_after_unexpected_ocr_readback(self) -> None:
+        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+        client = object()
+        original_state = facevalue.current_face_value_state.copy()
+        facevalue.current_face_value_state.clear()
+        facevalue.current_face_value_state["Nose Size"] = 170
+        try:
+            with (
+                patch(
+                    "facevalue.select_menu_item",
+                    new=AsyncMock(return_value=(True, "selected", screenshot)),
+                ),
+                patch(
+                    "facevalue.return_to_menu",
+                    new=AsyncMock(return_value=(True, "returned", screenshot)),
+                ) as return_menu,
+                patch(
+                    "facevalue.focus_menu_item",
+                    new=AsyncMock(
+                        return_value=(True, "focused", screenshot)
+                    ),
+                ),
+                patch(
+                    "facevalue.desk.press_key",
+                    new=AsyncMock(),
+                ) as press_key,
+                patch(
+                    "facevalue.desk.capture_full_desktop",
+                    new=AsyncMock(return_value=screenshot),
+                ),
+                patch(
+                    "facevalue.read_leaf_integer",
+                    return_value=(1, ""),
+                ),
+                patch("facevalue.asyncio.sleep", new=AsyncMock()),
+                patch("builtins.print") as print_message,
+            ):
+                result = asyncio.run(
+                    facevalue.modify_face_value(
+                        client,
+                        screenshot,
+                        "Nose Size",
+                        1,
+                    )
+                )
+
+            self.assertFalse(result[0])
+            self.assertIn("inconsistent", result[1])
+            self.assertEqual(result[3], 0)
+            self.assertEqual(
+                press_key.await_args_list,
+                [
+                    call(client, "e"),
+                    call(client, "Right"),
+                    call(client, "e"),
+                    call(client, "e"),
+                    call(client, "Left"),
+                    call(client, "e"),
+                ],
+            )
+            self.assertEqual(return_menu.await_count, 2)
+            self.assertEqual(facevalue.current_face_value_state["Nose Size"], 170)
+            self.assertIn("attempting to revert", print_message.call_args.args[0])
         finally:
             facevalue.current_face_value_state.clear()
             facevalue.current_face_value_state.update(original_state)

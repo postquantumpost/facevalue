@@ -12,6 +12,7 @@ import warnings
 import zlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
@@ -21,6 +22,56 @@ import numpy as np
 DESKTOP_WINDOW_WIDTH_PX = 640
 DESKTOP_WINDOW_HEIGHT_PX = 480
 CONNECT_TIMEOUT_SECONDS = 5.0
+NUMBER_SAMPLE_VALUES = {
+    1: 125,
+    2: 125,
+    3: 110,
+    4: 146,
+    5: 143,
+    6: 146,
+    7: 183,
+    8: 72,
+    9: 157,
+    10: 152,
+    11: 107,
+    12: 182,
+    13: 77,
+    14: 125,
+    15: 125,
+    16: 110,
+    17: 146,
+    18: 143,
+    19: 146,
+    20: 183,
+    21: 72,
+    22: 157,
+    23: 152,
+    24: 107,
+    25: 182,
+    26: 77,
+    27: 98,
+    28: 63,
+    29: 222,
+    30: 144,
+    31: 245,
+    32: 58,
+    33: 246,
+    34: 168,
+    35: 92,
+    36: 203,
+    37: 181,
+    38: 180,
+}
+NUMBER_ADDITIONAL_SAMPLE_VALUES = {
+    "failed4_n1.png": 74,
+    "failed9_n1.png": 129,
+    "failed5_n1.png": 58,
+}
+NUMBER_TEMPLATE_SIZE = (32, 22)
+NUMBER_TEMPLATE_GLYPH_WIDTH = 18
+NUMBER_FOREGROUND_THRESHOLD = 60
+NUMBER_RECOGNITION_MAX_ERROR = 0.0605
+NUMBER_RECOGNITION_MIN_MARGIN = 0.05
 
 StartupScreenCheck = Callable[[np.ndarray], tuple[bool, str]]
 
@@ -135,8 +186,10 @@ def prepare_ocr_region(
     nominal_region: Sequence[int],
     nominal_width: int,
     nominal_height: int,
+    upscale: bool = True,
+    binarize_threshold: int | None = None,
 ) -> Any:
-    from PIL import Image, ImageEnhance, ImageOps
+    from PIL import Image, ImageOps
 
     region = crop_ocr_region(
         image,
@@ -144,13 +197,17 @@ def prepare_ocr_region(
         nominal_width,
         nominal_height,
     )
-    region = ImageOps.grayscale(region)
-    region = ImageOps.autocontrast(region)
-    region = ImageEnhance.Contrast(region).enhance(2.0)
-    region = region.resize(
-        (region.width * 3, region.height * 3),
-        Image.Resampling.LANCZOS,
-    )
+    if binarize_threshold is not None:
+        if not 0 <= binarize_threshold <= 255:
+            raise ValueError("binarize threshold must be between 0 and 255")
+        region = ImageOps.grayscale(region).point(
+            lambda pixel: 255 if pixel > binarize_threshold else 0
+        )
+    if upscale:
+        region = region.resize(
+            (region.width * 3, region.height * 3),
+            Image.Resampling.LANCZOS,
+        )
     return region
 
 
@@ -160,6 +217,8 @@ def save_ocr_region(
     nominal_width: int,
     nominal_height: int,
     destination: Path = Path("failed_ocr.png"),
+    upscale: bool = True,
+    binarize_threshold: int | None = None,
 ) -> Path:
     destination = destination.resolve()
     prepare_ocr_region(
@@ -167,6 +226,8 @@ def save_ocr_region(
         nominal_region,
         nominal_width,
         nominal_height,
+        upscale,
+        binarize_threshold,
     ).save(destination, format="PNG")
     raw_destination = destination.with_name(
         f"{destination.stem}_raw{destination.suffix}"
@@ -180,18 +241,159 @@ def save_ocr_region(
     return destination
 
 
+def segment_number_glyphs(image: Any) -> list[np.ndarray]:
+    from PIL import ImageOps
+
+    grayscale = np.asarray(ImageOps.grayscale(image))
+    foreground = grayscale > NUMBER_FOREGROUND_THRESHOLD
+    if not foreground.any():
+        raise ValueError("number crop contains no foreground pixels")
+    occupied_columns = np.any(foreground, axis=0)
+    column_runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for column, occupied in enumerate(np.append(occupied_columns, False)):
+        if occupied and start is None:
+            start = column
+        elif not occupied and start is not None:
+            column_runs.append((start, column))
+            start = None
+
+    occupied_rows = np.where(np.any(foreground, axis=1))[0]
+    top, bottom = int(occupied_rows.min()), int(occupied_rows.max()) + 1
+    glyphs = [
+        foreground[top:bottom, left:right]
+        for left, right in column_runs
+    ]
+    if not 1 <= len(glyphs) <= 3:
+        raise ValueError(
+            f"number crop contains {len(glyphs)} glyphs; expected 1 to 3"
+        )
+    return glyphs
+
+
+def normalize_number_glyph(glyph: np.ndarray) -> np.ndarray:
+    from PIL import Image
+
+    height_px, width_px = NUMBER_TEMPLATE_SIZE
+    normalized = np.zeros((height_px, width_px), dtype=np.bool_)
+    left = (width_px - NUMBER_TEMPLATE_GLYPH_WIDTH) // 2
+    image = Image.fromarray(glyph.astype(np.uint8) * 255).resize(
+        (NUMBER_TEMPLATE_GLYPH_WIDTH, height_px),
+        Image.Resampling.NEAREST,
+    )
+    normalized[:, left : left + NUMBER_TEMPLATE_GLYPH_WIDTH] = (
+        np.asarray(image) > 0
+    )
+    return normalized
+
+
+@lru_cache(maxsize=1)
+def number_templates(
+    samples_directory: Path = Path(__file__).parent / "samples",
+) -> dict[str, tuple[np.ndarray, ...]]:
+    from PIL import Image
+
+    templates: dict[str, list[np.ndarray]] = {
+        str(digit): [] for digit in range(10)
+    }
+    sample_values = {
+        **{
+            f"good{sample_number}.png": value
+            for sample_number, value in NUMBER_SAMPLE_VALUES.items()
+        },
+        **NUMBER_ADDITIONAL_SAMPLE_VALUES,
+    }
+    for sample_name, value in sample_values.items():
+        sample_path = samples_directory / sample_name
+        with Image.open(sample_path) as sample:
+            glyphs = segment_number_glyphs(sample)
+        digits = str(value)
+        if len(glyphs) != len(digits):
+            raise ValueError(
+                f"number template {sample_path.name} does not match value {value}"
+            )
+        for digit, glyph in zip(digits, glyphs, strict=True):
+            templates[digit].append(normalize_number_glyph(glyph))
+    missing_digits = [digit for digit, glyphs in templates.items() if not glyphs]
+    if missing_digits:
+        raise ValueError(
+            f"number templates are missing digits: {', '.join(missing_digits)}"
+        )
+    return {
+        digit: tuple(glyphs)
+        for digit, glyphs in templates.items()
+    }
+
+
+def recognize_integer_region(
+    image: np.ndarray,
+    nominal_region: Sequence[int],
+    nominal_width: int,
+    nominal_height: int,
+) -> tuple[int | None, str]:
+    try:
+        glyphs = segment_number_glyphs(
+            crop_ocr_region(
+                image,
+                nominal_region,
+                nominal_width,
+                nominal_height,
+            )
+        )
+        templates = number_templates()
+        recognized_digits: list[str] = []
+        glyph_details: list[str] = []
+        for index, glyph in enumerate(glyphs, start=1):
+            normalized = normalize_number_glyph(glyph)
+            scores = sorted(
+                (
+                    min(
+                        float(np.mean(normalized != template))
+                        for template in templates[digit]
+                    ),
+                    digit,
+                )
+                for digit in templates
+            )
+            best_error, digit = scores[0]
+            margin = scores[1][0] - best_error
+            if (
+                best_error > NUMBER_RECOGNITION_MAX_ERROR
+                or margin < NUMBER_RECOGNITION_MIN_MARGIN
+            ):
+                raise ValueError(
+                    f"glyph {index} is ambiguous: best {digit} error "
+                    f"{best_error:.3f}, margin {margin:.3f}"
+                )
+            recognized_digits.append(digit)
+            glyph_details.append(
+                f"{digit} error {best_error:.3f}"
+            )
+        value = int("".join(recognized_digits))
+        if not 0 <= value <= 255:
+            raise ValueError(f"recognized value {value} is outside 0 to 255")
+        return value, ", ".join(glyph_details)
+    except (OSError, ValueError) as error:
+        return None, f"number recognition failed: {error}"
+
+
 def ocr_region_text(
     image: np.ndarray,
     nominal_region: Sequence[int],
     nominal_width: int,
     nominal_height: int,
     character_whitelist: str | None = None,
+    page_segmentation_mode: int = 7,
+    upscale: bool = True,
+    binarize_threshold: int | None = None,
 ) -> str:
     region = prepare_ocr_region(
         image,
         nominal_region,
         nominal_width,
         nominal_height,
+        upscale,
+        binarize_threshold,
     )
     image_bytes = io.BytesIO()
     region.save(image_bytes, format="PNG")
@@ -202,7 +404,7 @@ def ocr_region_text(
                 "stdin",
                 "stdout",
                 "--psm",
-                "7",
+                str(page_segmentation_mode),
                 *(
                     ["-c", f"tessedit_char_whitelist={character_whitelist}"]
                     if character_whitelist

@@ -9,3 +9,7 @@ with "source .venv/bin/activate". Use "python3" instead of "/usr/bin/python3".
 
 If it appears the remote application is showing an unexpecte screen, request guidance. I may be able
 to reset the remote application state.
+
+Always have OCR tests that match how OCR is used in the application including real tesseract invocations,
+or other libraries that are used. Match the libraries that are used in the application in the tests.
+

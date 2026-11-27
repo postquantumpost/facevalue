@@ -453,10 +453,78 @@ async def return_to_menu(
     return False, f"Q did not return to {expected_heading}; exiting.", screenshot
 
 
+async def revert_failed_readback(
+    client: Any,
+    submenu_name: str,
+    item_name: str,
+    requested_delta: int,
+    error_message: str,
+) -> tuple[bool, str, Any, int]:
+    print(
+        f"OCR readback was inconsistent for {item_name}; "
+        f"attempting to revert the {requested_delta:+d} operation: "
+        f"{error_message}",
+        flush=True,
+    )
+    await desk.press_key(client, "e")
+    await desk.press_key(
+        client,
+        "Left" if requested_delta > 0 else "Right",
+    )
+    await desk.press_key(client, "e")
+    await asyncio.sleep(2.0)
+    screenshot = await desk.capture_full_desktop(client)
+    returned, message, screenshot = await return_to_menu(
+        client,
+        "Alter Face & Hair > Face Structure",
+        submenu_name,
+    )
+    if not returned:
+        return False, message, screenshot, 0
+    returned, message, screenshot = await return_to_menu(
+        client,
+        "Alter Face & Hair",
+        "Face Structure",
+    )
+    if not returned:
+        return False, message, screenshot, 0
+    return False, error_message, screenshot, 0
+
+
+def read_integer_region(
+    screenshot: Any,
+    item_name: str,
+    number_region: Sequence[int],
+    expected_values: Sequence[int] = (),
+) -> tuple[int | None, str]:
+    value, detail = desk.recognize_integer_region(
+        screenshot,
+        number_region,
+        nominal_screen_width,
+        nominal_screen_height,
+    )
+    if value is not None:
+        return value, ""
+    saved_path = desk.save_ocr_region(
+        screenshot,
+        number_region,
+        nominal_screen_width,
+        nominal_screen_height,
+        upscale=False,
+        binarize_threshold=60,
+    )
+    return (
+        None,
+        f"Unable to read {item_name} as an integer: {detail}; "
+        f"saved OCR crop to {saved_path}; exiting.",
+    )
+
+
 def read_leaf_integer(
     screenshot: Any,
     menu: dict[str, Any],
     item_name: str,
+    expected_values: Sequence[int] = (),
 ) -> tuple[int | None, str]:
     item_index = menu_item_index(menu, item_name)
     item_top = nominal_menu_anchor[1] + nominal_item_height * item_index
@@ -475,33 +543,17 @@ def read_leaf_integer(
     ):
         return None, f"{item_name} is not displayed; exiting."
 
-    number_region = [
-        nominal_menu_anchor[0] + nominal_number_start,
-        item_top + nominal_number_y_offset_1,
-        nominal_menu_anchor[0] + nominal_item_width,
-        item_top + nominal_number_y_offset_2,
-    ]
-    number_text = desk.ocr_region_text(
+    return read_integer_region(
         screenshot,
-        number_region,
-        nominal_screen_width,
-        nominal_screen_height,
-        "-+0123456789",
+        item_name,
+        [
+            nominal_menu_anchor[0] + nominal_number_start,
+            item_top + nominal_number_y_offset_1,
+            nominal_menu_anchor[0] + nominal_item_width,
+            item_top + nominal_number_y_offset_2,
+        ],
+        expected_values,
     )
-    match = re.search(r"[+-]?\d+", number_text)
-    if match is None:
-        saved_path = desk.save_ocr_region(
-            screenshot,
-            number_region,
-            nominal_screen_width,
-            nominal_screen_height,
-        )
-        return (
-            None,
-            f"Unable to read {item_name} as an integer: {number_text!r}; "
-            f"saved OCR crop to {saved_path}; exiting.",
-        )
-    return int(match.group()), ""
 
 
 async def read_all_face_structure_values(
@@ -659,6 +711,13 @@ async def modify_face_value(
     item_name: str,
     requested_delta: int,
 ) -> tuple[bool, str, Any, int]:
+    if requested_delta not in (-1, 1):
+        return (
+            False,
+            f"{item_name} modification delta must be -1 or 1; exiting.",
+            root_screenshot,
+            0,
+        )
     paths = face_structure_leaf_paths()
     try:
         submenu_name, submenu = paths[item_name]
@@ -705,15 +764,34 @@ async def modify_face_value(
     await desk.press_key(client, "e")
     await asyncio.sleep(2.0)
     modified_screenshot = await desk.capture_full_desktop(client)
+    old_value = current_face_value_state[item_name]
     new_value, error_message = read_leaf_integer(
         modified_screenshot,
         submenu,
         item_name,
+        expected_values=(old_value, old_value + requested_delta),
     )
     if new_value is None:
-        return False, error_message, modified_screenshot, 0
-    old_value = current_face_value_state[item_name]
+        return await revert_failed_readback(
+            client,
+            submenu_name,
+            item_name,
+            requested_delta,
+            error_message,
+        )
     actual_delta = new_value - old_value
+    if actual_delta not in (0, requested_delta):
+        return await revert_failed_readback(
+            client,
+            submenu_name,
+            item_name,
+            requested_delta,
+            (
+                f"{item_name} readback {new_value} is inconsistent with "
+                f"expected {old_value} or {old_value + requested_delta}; "
+                "exiting."
+            ),
+        )
     current_face_value_state[item_name] = new_value
 
     returned, message, structure_screenshot = await return_to_menu(
@@ -807,23 +885,13 @@ async def verify_desktop_controls(
         nominal_menu_anchor[0] + nominal_item_width,
         item_top + nominal_number_y_offset_2,
     ]
-    number_text = desk.ocr_region_text(
+    nose_size, error_message = read_integer_region(
         balance_screenshot,
+        "Nose Size",
         number_region,
-        nominal_screen_width,
-        nominal_screen_height,
-        "-+0123456789",
     )
-    match = re.search(r"[+-]?\d+", number_text)
-    if match is None:
-        saved_path = desk.save_ocr_region(
-            balance_screenshot,
-            number_region,
-            nominal_screen_width,
-            nominal_screen_height,
-        )
-        return False, f"Unable to read Nose Size as an integer: {number_text!r}; saved OCR crop to {saved_path}; exiting.", balance_screenshot
-    nose_size = int(match.group())
+    if nose_size is None:
+        return False, error_message, balance_screenshot
     print(f"Nose Size: {nose_size}", flush=True)
 
     returned, message, structure_screenshot = await return_to_menu(
