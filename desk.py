@@ -25,6 +25,10 @@ CONNECT_TIMEOUT_SECONDS = 5.0
 StartupScreenCheck = Callable[[np.ndarray], tuple[bool, str]]
 
 
+class DesktopApplicationError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class DesktopConfig:
     host: str
@@ -40,6 +44,10 @@ StartupControlCheck = Callable[
 ContinuingControlCheck = Callable[
     [Any, np.ndarray],
     Awaitable[np.ndarray],
+]
+StartupRecoveryCheck = Callable[
+    [Any, np.ndarray],
+    Awaitable[np.ndarray | None],
 ]
 
 
@@ -691,6 +699,7 @@ async def capture_desktop(
     startup_control_check: StartupControlCheck | None = None,
     stop_after_startup: bool = False,
     continuing_control_check: ContinuingControlCheck | None = None,
+    startup_recovery_check: StartupRecoveryCheck | None = None,
 ) -> None:
     def publish(item: Any) -> None:
         try:
@@ -699,76 +708,124 @@ async def capture_desktop(
             frame_queue.get_nowait()
             frame_queue.put_nowait(item)
 
+    connection_attempts = 3
     try:
-        publish("Connecting to VNC desktop...")
-        async with open_desktop(config) as client:
-            if state is not None:
-                state["desktop_client"] = client
-            startup_checked = startup_screen_check is None
-            while not stop_event.is_set():
-                cycle_started = asyncio.get_running_loop().time()
-                screenshot = await asyncio.wait_for(
-                    capture_full_desktop(client),
-                    timeout=max(30.0, update_seconds),
+        for attempt in range(1, connection_attempts + 1):
+            try:
+                publish(
+                    "Connecting to VNC desktop..."
+                    if attempt == 1
+                    else f"Reconnecting to VNC desktop (attempt {attempt}/"
+                    f"{connection_attempts})..."
                 )
-                if not startup_checked:
-                    try:
-                        startup_ok, message = startup_screen_check(screenshot)
-                    except (OSError, RuntimeError, ValueError) as error:
-                        startup_ok = False
-                        message = f"Desktop application check failed: {error}"
-                    print(message, flush=True)
-                    if not startup_ok:
-                        publish(RuntimeError(message))
-                        stop_event.set()
-                        break
-                    startup_checked = True
-                if state is not None:
-                    state["desktop_screenshot"] = screenshot
-                if startup_control_check is not None:
-                    publish(scale_desktop(screenshot))
-                if startup_control_check is not None:
-                    try:
-                        control_ok, message, screenshot = (
-                            await startup_control_check(client, screenshot)
+                async with open_desktop(config) as client:
+                    if state is not None:
+                        state["desktop_client"] = client
+                    startup_checked = startup_screen_check is None
+                    connection_control_check = startup_control_check
+                    while not stop_event.is_set():
+                        cycle_started = asyncio.get_running_loop().time()
+                        screenshot = await asyncio.wait_for(
+                            capture_full_desktop(client),
+                            timeout=max(30.0, update_seconds),
                         )
-                    except (OSError, RuntimeError, ValueError) as error:
-                        control_ok = False
-                        message = f"Desktop control check failed: {error}"
-                    print(message, flush=True)
-                    if not control_ok:
-                        publish(RuntimeError(message))
-                        stop_event.set()
-                        break
-                    startup_control_check = None
+                        if not startup_checked:
+                            try:
+                                startup_ok, message = startup_screen_check(
+                                    screenshot
+                                )
+                            except (OSError, RuntimeError, ValueError) as error:
+                                startup_ok = False
+                                message = (
+                                    "Desktop application check failed: "
+                                    f"{error}"
+                                )
+                            print(message, flush=True)
+                            if (
+                                not startup_ok
+                                and startup_recovery_check is not None
+                            ):
+                                recovered = await startup_recovery_check(
+                                    client, screenshot
+                                )
+                                if recovered is not None:
+                                    screenshot = recovered
+                                    startup_ok, message = startup_screen_check(
+                                        screenshot
+                                    )
+                                    print(message, flush=True)
+                            if not startup_ok:
+                                publish(RuntimeError(message))
+                                stop_event.set()
+                                break
+                            startup_checked = True
+                        if state is not None:
+                            state["desktop_screenshot"] = screenshot
+                        if connection_control_check is not None:
+                            publish(scale_desktop(screenshot))
+                            try:
+                                control_ok, message, screenshot = (
+                                    await connection_control_check(
+                                        client, screenshot
+                                    )
+                                )
+                            except (OSError, RuntimeError, ValueError) as error:
+                                control_ok = False
+                                message = (
+                                    "Desktop control check failed: "
+                                    f"{error}"
+                                )
+                            print(message, flush=True)
+                            if not control_ok:
+                                publish(RuntimeError(message))
+                                stop_event.set()
+                                break
+                            connection_control_check = None
+                        if stop_event.is_set():
+                            break
+                        if stop_after_startup and startup_checked:
+                            if state is not None:
+                                state["desktop_screenshot"] = screenshot
+                            publish(scale_desktop(screenshot))
+                            stop_event.set()
+                            break
+                        if continuing_control_check is not None:
+                            screenshot = await continuing_control_check(
+                                client, screenshot
+                            )
+                            if state is not None:
+                                state["desktop_screenshot"] = screenshot
+                        publish(
+                            f"Connected to {config.host}; "
+                            "full desktop captured"
+                        )
+                        publish(scale_desktop(screenshot))
+                        await asyncio.sleep(
+                            max(
+                                0.0,
+                                update_seconds
+                                - (
+                                    asyncio.get_running_loop().time()
+                                    - cycle_started
+                                ),
+                            )
+                        )
                 if stop_event.is_set():
                     break
-                if stop_after_startup and startup_checked:
-                    if state is not None:
-                        state["desktop_screenshot"] = screenshot
-                    publish(scale_desktop(screenshot))
+                print("Desktop connection ended; reconnecting...", flush=True)
+            except Exception as error:
+                if stop_event.is_set():
+                    break
+                message = (
+                    f"desktop connection failed on attempt {attempt}: "
+                    f"{error}"
+                )
+                print(message, flush=True)
+                if attempt == connection_attempts:
+                    publish(RuntimeError(message))
                     stop_event.set()
                     break
-                if continuing_control_check is not None:
-                    screenshot = await continuing_control_check(client, screenshot)
-                    if state is not None:
-                        state["desktop_screenshot"] = screenshot
-                publish(
-                    f"Connected to {config.host}; full desktop captured"
-                )
-                publish(scale_desktop(screenshot))
-                await asyncio.sleep(
-                    max(
-                        0.0,
-                        update_seconds
-                        - (asyncio.get_running_loop().time() - cycle_started),
-                    )
-                )
-    except Exception as error:
-        message = f"desktop connection failed: {error}"
-        print(message, flush=True)
-        publish(RuntimeError(message))
-        stop_event.set()
+                await asyncio.sleep(1.0)
     finally:
         if state is not None:
             state["desktop_client"] = None
@@ -779,28 +836,52 @@ async def run_desktop_sequence(
     state: dict[str, Any] | None = None,
     startup_screen_check: StartupScreenCheck | None = None,
     startup_control_check: StartupControlCheck | None = None,
+    startup_recovery_check: StartupRecoveryCheck | None = None,
 ) -> np.ndarray:
-    try:
-        async with open_desktop(config) as client:
+    for attempt in range(1, 4):
+        try:
+            async with open_desktop(config) as client:
+                if state is not None:
+                    state["desktop_client"] = client
+                screenshot = await capture_full_desktop(client)
+                if startup_screen_check is not None:
+                    ok, message = startup_screen_check(screenshot)
+                    print(message, flush=True)
+                    if not ok and startup_recovery_check is not None:
+                        recovered = await startup_recovery_check(
+                            client, screenshot
+                        )
+                        if recovered is not None:
+                            screenshot = recovered
+                            ok, message = startup_screen_check(screenshot)
+                            print(message, flush=True)
+                    if not ok:
+                        raise DesktopApplicationError(message)
+                if startup_control_check is not None:
+                    ok, message, screenshot = await startup_control_check(
+                        client, screenshot
+                    )
+                    print(message, flush=True)
+                    if not ok:
+                        raise DesktopApplicationError(message)
+                return screenshot
+        except Exception as error:
+            if isinstance(error, DesktopApplicationError):
+                raise
+            if attempt == 3:
+                raise RuntimeError(
+                    f"desktop connection failed after 2 retries: {error}"
+                ) from error
+            print(
+                f"desktop connection failed on attempt {attempt}; "
+                "retrying...",
+                flush=True,
+            )
+            await asyncio.sleep(1.0)
+        finally:
             if state is not None:
-                state["desktop_client"] = client
-            screenshot = await capture_full_desktop(client)
-            if startup_screen_check is not None:
-                ok, message = startup_screen_check(screenshot)
-                print(message, flush=True)
-                if not ok:
-                    raise RuntimeError(message)
-            if startup_control_check is not None:
-                ok, message, screenshot = await startup_control_check(
-                    client, screenshot
-                )
-                print(message, flush=True)
-                if not ok:
-                    raise RuntimeError(message)
-            return screenshot
-    finally:
-        if state is not None:
-            state["desktop_client"] = None
+                state["desktop_client"] = None
+    raise RuntimeError("desktop connection failed after 2 retries")
 
 
 def display_desktop(
@@ -812,6 +893,7 @@ def display_desktop(
     stop_after_startup: bool = False,
     on_screenshot: Callable[[np.ndarray], None] | None = None,
     continuing_control_check: ContinuingControlCheck | None = None,
+    startup_recovery_check: StartupRecoveryCheck | None = None,
 ) -> np.ndarray | None:
     if update_seconds <= 0:
         raise ValueError("update_seconds must be greater than zero")
@@ -840,6 +922,7 @@ def display_desktop(
                 startup_control_check,
                 stop_after_startup,
                 continuing_control_check,
+                startup_recovery_check,
             )
         ),
         daemon=True,

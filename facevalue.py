@@ -289,20 +289,41 @@ def focused_menu_index(screenshot: Any, menu_size: int) -> int:
     return max(range(menu_size), key=brightness_by_row.__getitem__)
 
 
+def navigable_menu_items(menu: dict[str, Any]) -> list[str]:
+    return [
+        item_name
+        for item_name in menu
+        if re.fullmatch(r"empty\d+", item_name) is None
+    ]
+
+
 async def focus_menu_item(
     client: Any,
     screenshot: Any,
     menu: dict[str, Any],
     item_name: str,
 ) -> tuple[bool, str, Any]:
-    target_index = menu_item_index(menu, item_name)
+    navigable_items = navigable_menu_items(menu)
     current_screenshot = screenshot
+    raw_items = list(menu)
     for _ in range(4):
-        current_index = focused_menu_index(current_screenshot, len(menu))
-        if current_index == target_index:
+        current_raw_index = focused_menu_index(current_screenshot, len(menu))
+        current_item_name = raw_items[current_raw_index]
+        if current_item_name == item_name:
             return True, f"Focused {item_name}.", current_screenshot
-        key = "Down" if target_index > current_index else "Up"
-        steps = abs(target_index - current_index)
+        target_raw_index = raw_items.index(item_name)
+        if target_raw_index > current_raw_index:
+            key = "Down"
+            steps = sum(
+                item in navigable_items
+                for item in raw_items[current_raw_index + 1 : target_raw_index + 1]
+            )
+        else:
+            key = "Up"
+            steps = sum(
+                item in navigable_items
+                for item in raw_items[target_raw_index:current_raw_index]
+            )
         for _ in range(steps):
             await desk.press_key(client, key)
             await asyncio.sleep(0.1)
@@ -313,6 +334,59 @@ async def focus_menu_item(
         f"Unable to focus {item_name} with keyboard navigation; exiting.",
         current_screenshot,
     )
+
+
+def recognized_menu_depth(heading: str) -> int | None:
+    headings = {
+        "Alter Face & Hair": 0,
+        "Alter Face & Hair > Adjust Face Template": 1,
+        "Alter Face & Hair > Face Structure": 1,
+    }
+    for submenu_name in alter_face_structure:
+        headings[
+            f"Alter Face & Hair > Face Structure > {submenu_name}"
+        ] = 2
+    normalized = " ".join(heading.split())
+    return headings.get(normalized)
+
+
+async def recover_desktop_menu(
+    client: Any,
+    screenshot: Any,
+) -> Any | None:
+    heading = desk.ocr_region_text(
+        screenshot,
+        nominal_alter_face_and_hair,
+        nominal_screen_width,
+        nominal_screen_height,
+    )
+    depth = recognized_menu_depth(heading)
+    if depth is None:
+        print(f"Desktop menu is unrecognized: {heading!r}", flush=True)
+        return None
+    for level in range(depth, 0, -1):
+        await desk.press_key(client, "q")
+        await asyncio.sleep(0.5)
+        screenshot = await desk.capture_full_desktop(client)
+        recovered_heading = desk.ocr_region_text(
+            screenshot,
+            nominal_alter_face_and_hair,
+            nominal_screen_width,
+            nominal_screen_height,
+        )
+        print(
+            f"Recovering desktop menu level {level}: {recovered_heading}",
+            flush=True,
+        )
+    final_heading = desk.ocr_region_text(
+        screenshot,
+        nominal_alter_face_and_hair,
+        nominal_screen_width,
+        nominal_screen_height,
+    )
+    if recognized_menu_depth(final_heading) == 0:
+        return screenshot
+    return None
 
 
 async def select_menu_item(
@@ -856,6 +930,7 @@ def run(arguments: argparse.Namespace) -> None:
                         state=state,
                         startup_screen_check=verify_desktop_display,
                         startup_control_check=verify_desktop_controls,
+                        startup_recovery_check=recover_desktop_menu,
                     )
                 )
             except RuntimeError as error:
@@ -1017,6 +1092,7 @@ def run(arguments: argparse.Namespace) -> None:
                         startup_control_check=verify_desktop_controls,
                         on_screenshot=update_face_feedback,
                         continuing_control_check=optimize_once,
+                        startup_recovery_check=recover_desktop_menu,
                     )
                 finally:
                     try:
@@ -1032,6 +1108,7 @@ def run(arguments: argparse.Namespace) -> None:
                 startup_screen_check=verify_desktop_display,
                 startup_control_check=verify_desktop_controls,
                 stop_after_startup=True,
+                startup_recovery_check=recover_desktop_menu,
             )
             return
         desk.display_desktop(
@@ -1040,6 +1117,7 @@ def run(arguments: argparse.Namespace) -> None:
             state=state,
             startup_screen_check=verify_desktop_display,
             startup_control_check=verify_desktop_controls,
+            startup_recovery_check=recover_desktop_menu,
         )
         return
     face.run(

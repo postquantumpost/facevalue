@@ -429,6 +429,114 @@ class DesktopTests(unittest.TestCase):
 
         self.assertEqual(focused_index, 1)
 
+    def test_focus_menu_item_skips_empty_entries(self) -> None:
+        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+        client = object()
+        menu = {
+            "Face Structure": None,
+            "empty0": None,
+            "Hair": None,
+        }
+
+        with (
+            patch(
+                "facevalue.focused_menu_index",
+                side_effect=[1, 2],
+            ),
+            patch(
+                "facevalue.desk.press_key",
+                new=AsyncMock(),
+            ) as press_key,
+            patch(
+                "facevalue.desk.capture_full_desktop",
+                new=AsyncMock(return_value=screenshot),
+            ),
+            patch("facevalue.asyncio.sleep", new=AsyncMock()),
+        ):
+            focused, _, _ = asyncio.run(
+                facevalue.focus_menu_item(
+                    client,
+                    screenshot,
+                    menu,
+                    "Hair",
+                )
+            )
+
+        self.assertTrue(focused)
+        press_key.assert_awaited_once_with(client, "Down")
+
+    def test_recover_desktop_menu_uses_breadcrumb_depth(self) -> None:
+        screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
+        client = object()
+
+        with (
+            patch(
+                "facevalue.desk.ocr_region_text",
+                side_effect=[
+                    "Alter Face & Hair > Face Structure > Forehead/Glabella",
+                    "Alter Face & Hair > Face Structure",
+                    "Alter Face & Hair > Face Structure",
+                    "Alter Face & Hair",
+                    "Alter Face & Hair",
+                ],
+            ),
+            patch(
+                "facevalue.desk.press_key",
+                new=AsyncMock(),
+            ) as press_key,
+            patch(
+                "facevalue.desk.capture_full_desktop",
+                new=AsyncMock(return_value=screenshot),
+            ),
+            patch("facevalue.asyncio.sleep", new=AsyncMock()),
+        ):
+            recovered = asyncio.run(
+                facevalue.recover_desktop_menu(client, screenshot)
+            )
+
+        self.assertIs(recovered, screenshot)
+        self.assertEqual(
+            press_key.await_args_list,
+            [call(client, "q"), call(client, "q")],
+        )
+
+    def test_capture_desktop_retries_connection_twice(self) -> None:
+        screenshot = np.zeros((1080, 1920, 4), dtype=np.uint8)
+        frame_queue: queue.Queue[object] = queue.Queue(maxsize=1)
+        stop_event = threading.Event()
+        config = desk.DesktopConfig(host="desktop.example.test")
+        desktop_context = AsyncMock()
+        desktop_context.__aenter__.return_value = object()
+
+        with (
+            patch(
+                "desk.open_desktop",
+                side_effect=[
+                    ConnectionError("first"),
+                    ConnectionError("second"),
+                    desktop_context,
+                ],
+            ) as open_desktop,
+            patch(
+                "desk.capture_full_desktop",
+                new=AsyncMock(return_value=screenshot),
+            ),
+            patch("desk.asyncio.sleep", new=AsyncMock()),
+            patch("builtins.print"),
+        ):
+            asyncio.run(
+                desk.capture_desktop(
+                    config,
+                    10.0,
+                    frame_queue,
+                    stop_event,
+                    stop_after_startup=True,
+                )
+            )
+
+        self.assertEqual(open_desktop.call_count, 3)
+        self.assertTrue(stop_event.is_set())
+
     def test_modify_random_face_values_updates_map_and_returns_home(self) -> None:
         screenshot = np.zeros((2160, 3840, 4), dtype=np.uint8)
         client = object()
