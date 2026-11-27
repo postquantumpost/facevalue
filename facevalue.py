@@ -484,8 +484,8 @@ async def modify_random_face_values(
             return False, message, current_screenshot
         old_value = current_face_value_state[item_name] - actual_delta
         print(
-            f"Modified {item_name}: requested {delta:+d}, "
-            f"actual {old_value} -> {current_face_value_state[item_name]} "
+            f"Modified {item_name}: previous value {old_value}, "
+            f"new value {current_face_value_state[item_name]} "
             f"[{iteration + 1}/{modification_count}]",
             flush=True,
         )
@@ -822,6 +822,10 @@ def run(arguments: argparse.Namespace) -> None:
                         analysis_data,
                         capture_path,
                     )
+                    print(
+                        f"Desktop face captured and processed: {capture_path.name}",
+                        flush=True,
+                    )
                     try:
                         completed_updates.put_nowait(analysis_data)
                     except queue.Full:
@@ -856,9 +860,24 @@ def run(arguments: argparse.Namespace) -> None:
                     )
                     if not ok:
                         raise RuntimeError(message)
+                    previous_value = (
+                        current_face_value_state[item_name] - actual_delta
+                    )
+                    changed_value = current_face_value_state[item_name]
+                    print(
+                        f"{item_name} changed: previous value "
+                        f"{previous_value}, new value {changed_value}",
+                        flush=True,
+                    )
                     candidate_score = await process_face(changed_screenshot)
-                    if candidate_score < desktop_consensus_match and actual_delta:
-                        reverted, revert_message, reverted_screenshot, _ = (
+                    previous_match = desktop_consensus_match
+                    print(
+                        f"Face match: previous value {previous_match:.6f}, "
+                        f"new value {candidate_score:.6f}",
+                        flush=True,
+                    )
+                    if candidate_score < previous_match and actual_delta:
+                        reverted, revert_message, reverted_screenshot, revert_delta = (
                             await modify_face_value(
                                 client,
                                 changed_screenshot,
@@ -868,19 +887,20 @@ def run(arguments: argparse.Namespace) -> None:
                         )
                         if not reverted:
                             raise RuntimeError(revert_message)
-                        await process_face(reverted_screenshot)
+                        reverted_value = current_face_value_state[item_name]
+                        reverted_match = await process_face(reverted_screenshot)
                         print(
-                            f"Reverted {item_name}: match "
-                            f"{candidate_score:.6f} < "
-                            f"{desktop_consensus_match:.6f}",
+                            f"{item_name} reverted to value {reverted_value} "
+                            f"(change {revert_delta:+d}); "
+                            f"reverted to match value {reverted_match:.6f}",
                             flush=True,
                         )
                         return reverted_screenshot
 
                     desktop_consensus_match = candidate_score
                     print(
-                        f"Kept {item_name}: match "
-                        f"{candidate_score:.6f} >= previous score",
+                        f"Kept {item_name}: value {changed_value}, "
+                        f"kept match value {desktop_consensus_match:.6f}",
                         flush=True,
                     )
                     return changed_screenshot
