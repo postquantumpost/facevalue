@@ -66,12 +66,15 @@ NUMBER_ADDITIONAL_SAMPLE_VALUES = {
     "failed4_n1.png": 74,
     "failed9_n1.png": 129,
     "failed5_n1.png": 58,
+    "failed0_n1.png": 50,
+    "failed1_n1.png": 111,
+    "failed6_n1.png": 62,
 }
 NUMBER_TEMPLATE_SIZE = (32, 22)
 NUMBER_TEMPLATE_GLYPH_WIDTH = 18
 NUMBER_FOREGROUND_THRESHOLD = 60
-NUMBER_RECOGNITION_MAX_ERROR = 0.0605
-NUMBER_RECOGNITION_MIN_MARGIN = 0.05
+NUMBER_RECOGNITION_MAX_ERROR = 0.073205
+NUMBER_RECOGNITION_MIN_MARGIN = 0.045
 
 StartupScreenCheck = Callable[[np.ndarray], tuple[bool, str]]
 

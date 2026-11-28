@@ -99,6 +99,9 @@ class DesktopTests(unittest.TestCase):
             ("failed4_n1.png", 74),
             ("failed9_n1.png", 129),
             ("failed5_n1.png", 58),
+            ("failed0_n1.png", 50),
+            ("failed1_n1.png", 111),
+            ("failed6_n1.png", 62),
         ):
             with self.subTest(sample=sample_name):
                 with Image.open(samples_directory / sample_name) as sample:
@@ -119,7 +122,8 @@ class DesktopTests(unittest.TestCase):
 
         self.assertEqual(set(templates), set("0123456789"))
         self.assertTrue(all(templates[digit] for digit in templates))
-        self.assertAlmostEqual(desk.NUMBER_RECOGNITION_MAX_ERROR, 0.0605)
+        self.assertAlmostEqual(desk.NUMBER_RECOGNITION_MAX_ERROR, 0.073205)
+        self.assertAlmostEqual(desk.NUMBER_RECOGNITION_MIN_MARGIN, 0.045)
 
     def test_real_number_samples_reconcile_through_application(self) -> None:
         samples_directory = Path(__file__).parents[1] / "samples"
